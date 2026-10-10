@@ -335,3 +335,4 @@ a.lk:hover{ text-decoration-style:solid }
 .standby{ margin-top:14px }
 .standby summary{ cursor:pointer; color:var(--muted); padding:8px 2px; font-size:15px }
 .standby .row{ opacity:.75 }
+.drawer .ft .btn .m{ font-size:12px; opacity:.85; font-weight:400 }

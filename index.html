@@ -349,6 +349,7 @@ a.lk:hover{ text-decoration-style:solid }
 .standby{ margin-top:14px }
 .standby summary{ cursor:pointer; color:var(--muted); padding:8px 2px; font-size:15px }
 .standby .row{ opacity:.75 }
+.drawer .ft .btn .m{ font-size:12px; opacity:.85; font-weight:400 }
 </style></head><body>
 <div class="wrap" id="app"><p class="note" style="padding-top:20vh;text-align:center">Loading…</p></div>
 <nav class="tabs" id="tabs" aria-label="Sections" hidden></nav>
@@ -690,6 +691,8 @@ function resources(c){
 const used = (c,id) => (c.used && c.used[id]) || 0;
 // Sorcerer slots, plus any made with Font of Magic (kept in used.x1..x5, so a Long Rest clears them)
 const slotsOf = c => { const r = row(c); return (c.cls === 'Sorcerer' && r) ? r.slots.map((n,i) => ({lv:i+1, max:n, x:used(c,'x'+(i+1))})).filter(s => s.max || s.x).map(s => Object.assign(s, {left: Math.max(0, s.max - used(c,'s'+s.lv)) + s.x})) : []; };
+const META = {'Subtle Spell':{cost:1, short:'Subtle', save:false}, 'Heightened Spell':{cost:2, short:'Heightened', save:true}};
+const mmTag = mm => mm && META[mm] ? ` (${META[mm].short})` : '';
 const FONT = [[1,2,2],[2,3,3],[3,5,5],[4,6,7],[5,7,9]]; // slot level, Sorcery Point cost, minimum Sorcerer level
 const spLeft = c => Math.max(0, (row(c) ? row(c).sp : 0) - used(c,'sp'));
 function slotMax(c, id){
@@ -933,16 +936,16 @@ const inFight = () => combat.round > 0 && combat.list.some(e => !e.standby);
 function roundsOf(dur){ const m = String(dur || '').match(/(\d+)\s*(round|minute)/i); if (!m) return 0; return /round/i.test(m[2]) ? +m[1] : +m[1] * 10; }
 function untilFor(dur){ const n = roundsOf(dur); return inFight() && n && n <= 100 ? combat.round + n - 1 : null; }
 const untilTxt = u => u == null ? '' : combat.round > u ? ' (time is up)' : ` (to round ${u})`;
-function addEffect(c, e){ if (e.k && c.effects.some(x => x.k === e.k)) return; e.id = uid(); const u = untilFor(e.dur); if (u != null) e.until = u; delete e.dur; c.effects.push(e); }
+function addEffect(c, e){ const ex = e.k && c.effects.find(x => x.k === e.k); if (ex) { if (e.mm) ex.mm = e.mm; else delete ex.mm; const u2 = untilFor(e.dur); if (u2 != null) ex.until = u2; return; } e.id = uid(); const u = untilFor(e.dur); if (u != null) e.until = u; delete e.dur; c.effects.push(e); }
 // everything currently running on a character, for the sheet and the DM's overview
 function activeList(c){
   const d = D(c), out = [];
   if (c.ac2 && used(c,'armorOn')) out.push({n: c.ac2Label || 'Alternative AC', note: `AC ${c.ac2}`, k: /mage armor/i.test(c.ac2Label || '') ? 'mage armor' : '', rm:'armor'});
   if (d.innate) out.push({n:'Innate Sorcery', note:`spell save DC ${d.dc}, Advantage on spell attacks`, ref:'cf|Innate Sorcery', rm:'innate', until: c.used.innateUntil});
-  c.effects.forEach(e => out.push({n: e.n, note: e.note || '', k: e.k || '', rm: e.id, until: e.until}));
+  c.effects.forEach(e => out.push({n: e.n, note: e.note || '', k: e.k || '', rm: e.id, until: e.until, mm: e.mm}));
   return out;
 }
-const effLink = (x) => x.k && R.spells[x.k] ? lk('spell', x.k, x.n) : x.ref ? lk(x.ref.split('|')[0], x.ref.split('|').slice(1).join('|'), x.n) : esc(x.n);
+const effLink = (x) => (x.k && R.spells[x.k] ? lk('spell', x.k, x.n) : x.ref ? lk(x.ref.split('|')[0], x.ref.split('|').slice(1).join('|'), x.n) : esc(x.n)) + esc(mmTag(x.mm));
 const splitList = v => String(v || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
 function defences(c){
   const L = c.level, out = {res:[], imm:[], cimm:[], adv:[], senses:[], other:[]};
@@ -963,7 +966,7 @@ function defences(c){
 const defTxt = arr => arr.map(x => x.src ? `${esc(x.t)} <span class="m">(${x.src})</span>` : esc(x.t)).join(', ');
 function statusStrip(c){
   const bits = [];
-  if (c.conc && R.spells[c.conc]) bits.push(`<span class="stat conc">Concentrating: ${lk('spell', c.conc, R.spells[c.conc].n)}${esc(untilTxt(c.concUntil))} <button class="xs" data-act="dropconc" aria-label="Drop concentration">Drop</button></span>`);
+  if (c.conc && R.spells[c.conc]) bits.push(`<span class="stat conc">Concentrating: ${lk('spell', c.conc, R.spells[c.conc].n)}${esc(mmTag(c.concMm))}${esc(untilTxt(c.concUntil))} <button class="xs" data-act="dropconc" aria-label="Drop concentration">Drop</button></span>`);
   activeList(c).forEach(x => bits.push(`<span class="stat act"><span>${effLink(x)}${x.note ? ` <span class="m">${esc(x.note)}</span>` : ''}${esc(untilTxt(x.until))}</span> <button class="xs" data-uneff="${esc(x.rm)}" aria-label="End ${esc(x.n)}">End</button></span>`));
   c.conditions.forEach(k => { const g = R.gloss['cond|' + k]; if (g) bits.push(`<span class="stat">${lk('cond', k, g.n)} <button class="xs" data-uncond="${esc(k)}" aria-label="Remove ${esc(g.n)}">×</button></span>`); });
   if (c.exhaustion) bits.push(`<span class="stat">${lk('cond','exhaustion','Exhaustion')} ${c.exhaustion}: −${c.exhaustion * 2} to d20 tests</span>`);
@@ -1114,7 +1117,7 @@ function renderCombat(c){
    <div class="card list">${c.conditions.length ? `<div class="row"><div class="main">${c.conditions.map(k => R.gloss['cond|'+k] ? lk('cond', k, R.gloss['cond|'+k].n) : '').join(', ')}</div></div>` : '<div class="row"><div class="main note">No conditions.</div></div>'}
    <div class="res"><div class="main"><div class="t">${lk('cond','exhaustion','Exhaustion')}</div><div class="m">Each level: −2 to d20 tests and −5 ft Speed. Level 6 is death.</div></div><div class="counter"><button data-exh="-1" aria-label="Lower exhaustion">−</button><b>${c.exhaustion}</b><button data-exh="1" aria-label="Raise exhaustion">+</button></div></div></div>
    <h2 class="sec">Active effects <span class="aside"><button class="btn sm" data-act="addeff">Add</button></span></h2>
-   <div class="card list">${c.conc && R.spells[c.conc] ? `<div class="row"><div class="main"><div class="m">Concentrating${esc(untilTxt(c.concUntil))}</div>${lk('spell', c.conc, R.spells[c.conc].n)}</div><button class="btn sm" data-act="dropconc">Drop</button></div>` : ''}${act.map(x => `<div class="row"><div class="main"><div>${effLink(x)}</div>${x.note || x.until != null ? `<div class="m">${esc(x.note)}${esc(untilTxt(x.until))}</div>` : ''}</div><button class="btn sm" data-uneff="${esc(x.rm)}">End</button></div>`).join('')}${!act.length && !c.conc ? '<div class="row"><div class="main note">Nothing running. Spells you cast here appear automatically.</div></div>' : ''}</div>
+   <div class="card list">${c.conc && R.spells[c.conc] ? `<div class="row"><div class="main"><div class="m">Concentrating${esc(untilTxt(c.concUntil))}</div>${lk('spell', c.conc, R.spells[c.conc].n)}${esc(mmTag(c.concMm))}</div><button class="btn sm" data-act="dropconc">Drop</button></div>` : ''}${act.map(x => `<div class="row"><div class="main"><div>${effLink(x)}</div>${x.note || x.until != null ? `<div class="m">${esc(x.note)}${esc(untilTxt(x.until))}</div>` : ''}</div><button class="btn sm" data-uneff="${esc(x.rm)}">End</button></div>`).join('')}${!act.length && !c.conc ? '<div class="row"><div class="main note">Nothing running. Spells you cast here appear automatically.</div></div>' : ''}</div>
    ${quickActions(c)}
    <h2 class="sec">Resources <span class="aside">tap a pip to spend or regain</span></h2><div class="card list">${resRows(c)}</div>`;
 }
@@ -1295,7 +1298,7 @@ function memberCard(c){
   const lines = [];
   const L = (k, v) => { if (v) lines.push(`<div class="ml"><span class="mk">${k}</span><span class="mv">${v}</span></div>`); };
   if (c.hp <= 0) L('Dying', `Death saves: ${used(c,'dS')} successes, ${used(c,'dF')} failures`);
-  L('Concentrating', c.conc && R.spells[c.conc] ? lk('spell', c.conc, R.spells[c.conc].n) + esc(untilTxt(c.concUntil)) : '');
+  L('Concentrating', c.conc && R.spells[c.conc] ? lk('spell', c.conc, R.spells[c.conc].n) + esc(mmTag(c.concMm)) + esc(untilTxt(c.concUntil)) : '');
   L('Active', act.map(x => effLink(x) + (x.note ? ` <span class="m">(${esc(x.note)})</span>` : '') + esc(untilTxt(x.until))).join(', '));
   L('Conditions', c.conditions.map(k => R.gloss['cond|'+k] ? lk('cond', k, R.gloss['cond|'+k].n) : '').filter(Boolean).concat(c.exhaustion ? [`${lk('cond','exhaustion','Exhaustion')} ${c.exhaustion}`] : []).join(', '));
   L('Resistant', defTxt(df.res)); L('Immune', defTxt(df.imm)); L('Can\'t be', defTxt(df.cimm));
@@ -1385,7 +1388,7 @@ function initRow(e){
   const sub = [];
   if (c) {
     sub.push(`HP ${c.hp}/${c.hpMax}${c.temp ? ` +${c.temp}` : ''}`, `AC ${c.ac2 && used(c,'armorOn') ? c.ac2 : c.ac}`);
-    if (c.conc && R.spells[c.conc]) sub.push('Conc: ' + esc(R.spells[c.conc].n));
+    if (c.conc && R.spells[c.conc]) sub.push('Conc: ' + esc(R.spells[c.conc].n) + esc(mmTag(c.concMm)));
     c.conditions.forEach(k => { const g = R.gloss['cond|'+k]; if (g) sub.push(esc(g.n)); });
   } else {
     if (e.ac) sub.push(`AC ${e.ac}`);
@@ -1589,6 +1592,12 @@ function spellDrawer(k, c){
       if (sp.rit) btns.push(`<button class="btn" data-cast="ritual">Cast as Ritual (+10 min)</button>`);
       if (c.sub === 'Aberrant' && c.level >= 6 && entry.src === 'sub') btns.push(`<button class="btn" data-cast="sp:${sp.l}">Spend ${sp.l} Sorcery Point${sp.l>1?'s':''}</button>`);
     } else if (sp.conc) btns.push(`<button class="btn pri" data-cast="cantrip">Cast</button>`);
+    if (c.cls === 'Sorcerer') Object.entries(META).forEach(([mm, m]) => {
+      if (!c.metamagic.includes(mm) || (m.save && !/saving throw/i.test(sp.h))) return;
+      let slot = 'cantrip', note = 'no slot';
+      if (sp.l > 0) { const s = slotsOf(c).find(x => x.lv >= sp.l && x.left); if (!s) return; slot = 's' + s.lv; note = ord(s.lv) + ' slot'; }
+      btns.push(`<button class="btn ${spLeft(c) >= m.cost ? 'pri' : ''}" data-cast="${slot}" data-mm="${esc(mm)}" ${spLeft(c) >= m.cost ? '' : 'disabled'}>Cast with ${m.short}<span class="m"> ${m.cost} SP, ${note}</span></button>`);
+    });
     if (entry.src === 'class' && sp.l > 0 && c.cls === 'Sorcerer') btns.push(`<button class="btn ghost" data-toggleprep="${esc(k)}">${entry.off ? 'Mark prepared' : 'Mark not prepared'}</button>`);
     if (!entry.always) btns.push(`<button class="btn ghost danger" data-removesp="${esc(k)}">Remove</button>`);
   }
@@ -1596,22 +1605,24 @@ function spellDrawer(k, c){
     el.addEventListener('click', e => {
       const cb = e.target.closest('[data-cast]');
       if (cb && c) {
-        const id = cb.dataset.cast;
+        const id = cb.dataset.cast, mm = cb.dataset.mm || '', mc = mm && META[mm] ? META[mm].cost : 0;
+        if (mc && spLeft(c) < mc) { toast('Not enough Sorcery Points'); return; }
         if (id.startsWith('sp:')) { const n = +id.slice(3); if (row(c).sp - used(c,'sp') < n) { toast('Not enough Sorcery Points'); return; } c.used.sp = used(c,'sp') + n; }
         else if (/^s\d$/.test(id) && c.cls === 'Sorcerer') { const lv = +id.slice(1), s = slotsOf(c).find(x => x.lv === lv); if (!s || !s.left) { toast('No slots of that level left.'); return; } if (s.max - used(c,id) > 0) c.used[id] = used(c,id) + 1; else c.used['x'+lv] = s.x - 1; }
         else if (id !== 'ritual' && id !== 'cantrip') { const max = slotMax(c, id); if (used(c,id) >= max) { toast('No uses left. Rest to recover them.'); return; } c.used[id] = used(c,id) + 1; }
-        let msg = `Cast ${sp.n}`;
-        if (sp.conc) { if (c.conc && c.conc !== k && R.spells[c.conc]) msg += `. ${R.spells[c.conc].n} ends`; c.conc = k; const u = untilFor(sp.d); if (u != null) c.concUntil = u; else delete c.concUntil; msg += '. Concentrating'; }
+        if (mc) c.used.sp = used(c,'sp') + mc;
+        let msg = `Cast ${sp.n}${mm ? ' with ' + META[mm].short + ` (${mc} Sorcery Point${mc > 1 ? 's' : ''})` : ''}`;
+        if (sp.conc) { if (c.conc && c.conc !== k && R.spells[c.conc]) msg += `. ${R.spells[c.conc].n} ends`; c.conc = k; if (mm) c.concMm = mm; else delete c.concMm; const u = untilFor(sp.d); if (u != null) c.concUntil = u; else delete c.concUntil; msg += '. Concentrating'; }
         else if (sp.l > 0 && !/^Instantaneous/i.test(sp.d)) {
           if (k === 'mage armor' && c.ac2 && /mage armor/i.test(c.ac2Label || '')) { c.used.armorOn = 1; msg += `. AC ${c.ac2}`; }
-          else addEffect(c, {n: sp.n, k, dur: sp.d});
+          else addEffect(c, {n: sp.n, k, dur: sp.d, mm});
         }
         commit(c); closeDrawer(); toast(msg); return;
       }
       const tp = e.target.closest('[data-toggleprep]');
       if (tp && c) { const s = c.spells.find(x => x.k === tp.dataset.toggleprep); if (s) { if (s.off) delete s.off; else s.off = true; commit(c); closeDrawer(); } return; }
       const rm = e.target.closest('[data-removesp]');
-      if (rm && c) { if (!rm.dataset.sure) { rm.dataset.sure = '1'; rm.textContent = 'Tap again to remove'; return; } c.spells = c.spells.filter(x => x.k !== rm.dataset.removesp); if (c.conc === rm.dataset.removesp) c.conc = null; commit(c); closeDrawer(); toast(`${sp.n} removed`); }
+      if (rm && c) { if (!rm.dataset.sure) { rm.dataset.sure = '1'; rm.textContent = 'Tap again to remove'; return; } c.spells = c.spells.filter(x => x.k !== rm.dataset.removesp); if (c.conc === rm.dataset.removesp) { c.conc = null; delete c.concMm; delete c.concUntil; } commit(c); closeDrawer(); toast(`${sp.n} removed`); }
     });
   }, () => spellDrawer(k, c));
 }
@@ -2121,7 +2132,7 @@ document.addEventListener('click', e => {
   if (A === 'addeff') effectDrawer(c);
   if (A === 'armor') { c.used.armorOn = used(c,'armorOn') ? 0 : 1; commit(c); }
   if (A === 'insp') { c.used.insp = used(c,'insp') ? 0 : 1; commit(c); }
-  if (A === 'dropconc') { const n = c.conc && R.spells[c.conc] ? R.spells[c.conc].n : ''; c.conc = null; delete c.concUntil; commit(c); toast(`${n} ends`); }
+  if (A === 'dropconc') { const n = c.conc && R.spells[c.conc] ? R.spells[c.conc].n : ''; c.conc = null; delete c.concUntil; delete c.concMm; commit(c); toast(`${n} ends`); }
   if (A === 'addcond') picker({title:'Conditions', items: CONDS.filter(k => R.gloss['cond|'+k]).map(k => ({id:k, label:R.gloss['cond|'+k].n, link:'cond|' + k})), need:CONDS.length, allowFewer:true, _sel:c.conditions, onDone:ks => { c.conditions = ks; commit(c); }});
   if (A === 'swapinv') picker({title:'Eldritch Invocations', intro:'Tick the invocations you have. When you gain a Warlock level you can replace one.', items:invItems(c, c.level, new Set(c.invocations)), need:row(c).inv, allowFewer:true, _sel:c.invocations, onDone:ks => { c.invocations = ks; normalise(c); commit(c); }});
   if (A === 'swapmeta') picker({title:'Metamagic', intro:'When you gain a Sorcerer level you can replace one option.', items:R.metamagic.map(m => ({id:m.n, label:m.n, link:'opt|' + m.n.toLowerCase()})), need:metaMax(c.level), allowFewer:true, _sel:c.metamagic, onDone:ks => { c.metamagic = ks; commit(c); }});
@@ -2149,7 +2160,7 @@ function restDrawer(c, kind){
   openDrawer(kind === 'long' ? 'Long rest' : 'Short rest', body, foot, el => el.addEventListener('click', e => {
     const restore = e.target.closest('[data-restore]');
     if (!e.target.closest('[data-ok]') && !restore) return;
-    if (kind === 'long') { c.used = {armorOn: used(c,'armorOn')}; c.effects = []; delete c.concUntil; c.hp = c.hpMax; c.temp = 0; c.conc = null; c.exhaustion = Math.max(0, c.exhaustion - 1); if (c.species === 'Human') c.used.insp = 1; }
+    if (kind === 'long') { c.used = {armorOn: used(c,'armorOn')}; c.effects = []; delete c.concUntil; delete c.concMm; c.hp = c.hpMax; c.temp = 0; c.conc = null; c.exhaustion = Math.max(0, c.exhaustion - 1); if (c.species === 'Human') c.used.insp = 1; }
     else { res.filter(r => r.rest === 'short').forEach(r => delete c.used[r.id]); if (restore) { c.used.sp = Math.max(0, used(c,'sp') - Math.floor(c.level/2)); c.used.restore = 1; } }
     commit(c); closeDrawer(); toast(kind === 'long' ? 'Long rest taken' : 'Short rest taken');
   }), () => restDrawer(c, kind));
