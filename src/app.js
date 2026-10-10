@@ -11,7 +11,7 @@ const SKILLS = [
  ['stealth','Stealth','dex'],['survival','Survival','wis']];
 const PCS = ['amber','mausfanger','mamuk'];
 const ORDER = PCS.concat(['mule']);
-const LS_KEY = 'party-sheets-v1', LS_TEXT = 'party-texts-v1', LS_UI = 'party-ui-v1', LS_PARTY = 'party-shared-v1';
+const LS_KEY = 'party-sheets-v1', LS_TEXT = 'party-texts-v1', LS_UI = 'party-ui-v1', LS_PARTY = 'party-shared-v1', LS_COMBAT = 'party-combat-v1';
 const SRC_LABEL = {class:'Class list', sub:'Subclass', tome:'Book of Shadows', mi:'Magic Initiate', mark:'Mark of Warding', arcanum:'Mystic Arcanum'};
 const TARGET_INV = ['agonizing blast','eldritch spear','repelling blast'];
 const CONDS = ['blinded','charmed','deafened','frightened','grappled','incapacitated','invisible','paralyzed','petrified','poisoned','prone','restrained','stunned','unconscious'];
@@ -39,9 +39,14 @@ let texts = lsGet(LS_TEXT) || {};
 let party = Object.assign({notes:'', loot:'', coins:{cp:0,sp:0,ep:0,gp:0,pp:0}, quests:[], npcs:[], log:[]}, lsGet(LS_PARTY) || {});
 const ui = Object.assign({cur:'amber', tab:{}, filter:{}, q:{}}, lsGet(LS_UI) || {});
 ui.q = ui.q || {};
+ui.ia = Object.assign({n:'', c:1, hp:'', ac:'', ally:false, v:''}, ui.ia || {});
 if (ui.cur === 'mule') ui.cur = 'party';
+const PAGES = PCS.concat(['party','init']);
 const hashId = (location.hash || '').slice(1);
-if (PCS.includes(hashId) || hashId === 'party') ui.cur = hashId; else if (hashId === 'mule') ui.cur = 'party';
+if (PAGES.includes(hashId)) ui.cur = hashId; else if (hashId === 'mule') ui.cur = 'party';
+// shared initiative tracker: one document for the whole table
+let combat = Object.assign({round:0, turn:null, list:[]}, lsGet(LS_COMBAT) || {});
+let ctxOverride = null;
 let DB = null, canWrite = true, syncState = 'local';
 let rolls = [];
 
@@ -55,6 +60,7 @@ function normalise(c){
   (c.invocations || []).forEach(n => { if (TARGET_INV.includes(n.toLowerCase()) && !c.invTargets[n]) c.invTargets[n] = 'eldritch blast'; });
   c.invocations = c.invocations || []; c.metamagic = c.metamagic || []; c.expertise = c.expertise || []; c.arcanum = c.arcanum || {};
   if (c.conc === undefined) c.conc = null;
+  if (!Array.isArray(c.effects)) c.effects = [];
   if (c.ac2 && !c.ac2Label) c.ac2Label = 'Mage Armor';
   (c.attacks || []).forEach(a => {
     if (!a.ref && a.n === 'Sneak Attack') a.ref = 'cf|Sneak Attack';
@@ -76,8 +82,9 @@ function D(c){
   const cm = m[c.castAb] ?? 0;
   const skills = {};
   SKILLS.forEach(([k,,a]) => { const p = c.skills[k] || 0; skills[k] = m[a] + (p ? pb * p : 0); });
-  return { L, pb, m, cm, dc: 8 + pb + cm, atk: pb + cm, skills, ex: (c.exhaustion || 0) * 2,
-    init: m.dex + (c.initMisc || 0), passive: 10 + skills.perception, tier: tierOf(L) };
+  const innate = c.cls === 'Sorcerer' && !!(c.used && c.used.innateOn);
+  return { L, pb, m, cm, dc: 8 + pb + cm + (innate ? 1 : 0), baseDc: 8 + pb + cm, innate, atk: pb + cm, skills, ex: (c.exhaustion || 0) * 2,
+    init: m.dex + (c.initMisc || 0), passive: 10 + skills.perception, pInv: 10 + skills.investigation, pIns: 10 + skills.insight, tier: tierOf(L) };
 }
 function maxSpellLevel(c, r){
   r = r || row(c); if (!r) return 0;
@@ -126,8 +133,8 @@ function resources(c){
     if (c.sub === 'Celestial' && L >= 14) out.push({id:'searing', n:'Searing Vengeance', sub:'', max:1, rest:'long', pips:true, ref:'sf|Searing Vengeance'});
   }
   if (c.cls === 'Sorcerer') {
-    out.push({id:'sp', n:'Sorcery Points', sub:'Font of Magic', max:r.sp, rest:'long', count:true, ref:'cf|Font of Magic'});
-    out.push({id:'innate', n:'Innate Sorcery', sub:'Bonus Action, 1 minute: +1 spell DC, Advantage on Sorcerer spell attacks', max:2, rest:'long', pips:true, ref:'cf|Innate Sorcery'});
+    if (r.sp) out.push({id:'sp', n:'Sorcery Points', sub:'Font of Magic: turn points into spell slots, or slots into points', max:r.sp, rest:'long', count:true, ref:'cf|Font of Magic', btn:['font','Convert']});
+    out.push({id:'innate', n:'Innate Sorcery', sub: d.innate ? `Active: spell save DC ${d.dc}, Advantage on Sorcerer spell attacks` : 'Bonus Action, 1 minute: +1 spell DC, Advantage on Sorcerer spell attacks', max:2, rest:'long', pips:true, ref:'cf|Innate Sorcery', btn:['innate', d.innate ? 'End' : 'Activate']});
     if (L >= 5) out.push({id:'restore', n:'Sorcerous Restoration', sub:`On a Short Rest, regain up to ${Math.floor(L/2)} Sorcery Points`, max:1, rest:'long', pips:true, ref:'cf|Sorcerous Restoration'});
     if (c.sub === 'Aberrant' && L >= 18) out.push({id:'warp', n:'Warping Implosion', sub:'Or spend 5 Sorcery Points', max:1, rest:'long', pips:true, ref:'sf|Warping Implosion'});
   }
@@ -145,8 +152,11 @@ function resources(c){
   out.push({id:'hd', n:`Hit Dice (d${cl(c).hd})`, sub:'Spend on a Short Rest. All return on a Long Rest', max:L, rest:'long', pips:L <= 12, count:L > 12, ref:'rule|hit point dice'});
   return out;
 }
-const slotsOf = c => { const r = row(c); return (c.cls === 'Sorcerer' && r) ? r.slots.map((n,i) => ({lv:i+1, max:n})).filter(s => s.max) : []; };
 const used = (c,id) => (c.used && c.used[id]) || 0;
+// Sorcerer slots, plus any made with Font of Magic (kept in used.x1..x5, so a Long Rest clears them)
+const slotsOf = c => { const r = row(c); return (c.cls === 'Sorcerer' && r) ? r.slots.map((n,i) => ({lv:i+1, max:n, x:used(c,'x'+(i+1))})).filter(s => s.max || s.x).map(s => Object.assign(s, {left: Math.max(0, s.max - used(c,'s'+s.lv)) + s.x})) : []; };
+const FONT = [[1,2,2],[2,3,3],[3,5,5],[4,6,7],[5,7,9]]; // slot level, Sorcery Point cost, minimum Sorcerer level
+const spLeft = c => Math.max(0, (row(c) ? row(c).sp : 0) - used(c,'sp'));
 function slotMax(c, id){
   const r = resources(c).find(x => x.id === id); if (r) return r.max;
   if (/^s\d$/.test(id)) return row(c).slots[+id.slice(1) - 1];
@@ -177,6 +187,12 @@ function saveParty(){
   clearTimeout(timers.party);
   timers.party = setTimeout(() => { dbSet('party/main', {notes: party.notes, loot: party.loot, coins: party.coins, updated: Date.now()}).catch(writeFailed); }, 700);
 }
+function saveCombat(){
+  lsSet(LS_COMBAT, combat);
+  if (!online()) return;
+  clearTimeout(timers.combat);
+  timers.combat = setTimeout(() => { dbSet('combat/main', {round: combat.round, turn: combat.turn, list: combat.list, updated: Date.now()}).catch(writeFailed); }, 250);
+}
 function saveItem(coll, item){ lsSet(LS_PARTY, party); if (online()) dbSet(coll + '/' + item.id, item).catch(writeFailed); }
 function deleteItem(coll, id){ lsSet(LS_PARTY, party); if (online()) dbDel(coll + '/' + id).catch(writeFailed); }
 function setSync(s){ syncState = s; document.querySelectorAll('.sync').forEach(el => { el.dataset.s = s; el.lastElementChild.textContent = s === 'ok' ? 'Party sync' : s === 'busy' ? 'Saving' : 'This device'; }); }
@@ -188,6 +204,7 @@ function applyDoc(path, v){
   }
   if (coll === 'texts' && v && v.map && JSON.stringify(v.map) !== JSON.stringify(texts)) { texts = clone(v.map); lsSet(LS_TEXT, texts); return true; }
   if (coll === 'party' && v) { party.notes = v.notes || ''; party.loot = v.loot || ''; party.coins = v.coins || party.coins; lsSet(LS_PARTY, party); return true; }
+  if (coll === 'combat' && v) { const nx = {round: v.round || 0, turn: v.turn || null, list: v.list || []}; if (JSON.stringify(nx) === JSON.stringify(combat)) return false; combat = nx; lsSet(LS_COMBAT, combat); return true; }
   if (['quests','npcs','log'].includes(coll) && v) { const i = party[coll].findIndex(x => x.id === id); const it = Object.assign({}, v, {id}); if (i >= 0) { if (JSON.stringify(party[coll][i]) === JSON.stringify(it)) return false; party[coll][i] = it; } else party[coll].push(it); lsSet(LS_PARTY, party); return true; }
   return false;
 }
@@ -200,6 +217,7 @@ async function connectBackend(){
       loaded: seen => {
         ORDER.forEach(id => { if (!seen.has('chars/' + id)) save(id); });
         if (!seen.has('party/main') && (party.notes || party.loot)) saveParty();
+        if (!seen.has('combat/main') && combat.list.length) saveCombat();
         ['quests','npcs','log'].forEach(coll => party[coll].forEach(it => { if (!seen.has(coll + '/' + it.id)) saveItem(coll, it); }));
         render();
       },
@@ -227,6 +245,7 @@ async function connect(){
         if (JSON.stringify(st) !== JSON.stringify(chars[d.id])) { chars[d.id] = st; changed = true; } } });
       if (changed) { lsSet(LS_KEY, chars); softRender(); }
     }, () => setSync('local'));
+    db.doc('combat/main').onSnapshot(s => { const v = s.exists && s.data(); if (v && !s.metadata.hasPendingWrites) { if (applyDoc('combat/main', v)) softRender(); } else if (!v && canWrite && combat.list.length) saveCombat(); }, () => {});
     db.doc('texts/custom').onSnapshot(s => { const v = s.exists && s.data(); if (v && v.map && JSON.stringify(v.map) !== JSON.stringify(texts)) { texts = clone(v.map); lsSet(LS_TEXT, texts); softRender(); } }, () => {});
     db.doc('party/main').onSnapshot(s => { const v = s.exists && s.data(); if (v && !s.metadata.hasPendingWrites) { party.notes = v.notes || ''; party.loot = v.loot || ''; party.coins = v.coins || party.coins; lsSet(LS_PARTY, party); softRender(); } else if (!v && canWrite && (party.notes || party.loot)) saveParty(); }, () => {});
     ['quests','npcs','log'].forEach(coll => db.collection(coll).onSnapshot(s => {
@@ -308,13 +327,15 @@ function render(){
   if (keep) { const n = document.getElementById(keep.id); if (n) { n.focus({preventScroll:true}); try { if (keep.s != null) n.setSelectionRange(keep.s, keep.e); } catch(_){} } }
 }
 function renderInner(){
-  const isParty = ui.cur === 'party';
+  if (!PAGES.includes(ui.cur)) ui.cur = 'party';
+  const isInit = ui.cur === 'init', isParty = ui.cur === 'party' || isInit;
   const c = isParty ? null : chars[ui.cur];
   document.body.dataset.c = ui.cur;
   const app = document.getElementById('app');
-  const bar = PCS.map(id => `<button class="pc" data-go="${id}" aria-current="${id === ui.cur}">${esc(chars[id].name)}</button>`).join('') + `<button class="pc" data-go="party" aria-current="${isParty}">Party</button><button class="pc dicechip" data-dice aria-label="Dice tray">Dice</button>`;
+  const bar = PCS.map(id => `<button class="pc" data-go="${id}" aria-current="${id === ui.cur}">${esc(chars[id].name)}</button>`).join('') + `<button class="pc" data-go="party" aria-current="${ui.cur === 'party'}">Party</button><button class="pc" data-go="init" aria-current="${isInit}">Initiative${inFight() ? ' <i class="live" aria-label="in progress"></i>' : ''}</button><button class="pc dicechip" data-dice aria-label="Dice tray">Dice</button>`;
   let main;
-  if (isParty) main = renderParty();
+  if (isInit) main = renderInit();
+  else if (isParty) main = renderParty();
   else {
     const tab = ui.tab[ui.cur] || 'combat';
     main = renderHero(c) + renderVitals(c) + ({combat:renderCombat, spells:renderSpells, features:renderFeatures, skills:renderSkills, notes:renderNotes}[tab])(c);
@@ -372,12 +393,102 @@ function renderVitals(c){
    ${statusStrip(c)}
    ${c.hp <= 0 ? renderDeath(c) : ''}`;
 }
+// ---------- active effects, defences ----------
+const inFight = () => combat.round > 0 && combat.list.some(e => !e.standby);
+function roundsOf(dur){ const m = String(dur || '').match(/(\d+)\s*(round|minute)/i); if (!m) return 0; return /round/i.test(m[2]) ? +m[1] : +m[1] * 10; }
+function untilFor(dur){ const n = roundsOf(dur); return inFight() && n && n <= 100 ? combat.round + n - 1 : null; }
+const untilTxt = u => u == null ? '' : combat.round > u ? ' (time is up)' : ` (to round ${u})`;
+function addEffect(c, e){ if (e.k && c.effects.some(x => x.k === e.k)) return; e.id = uid(); const u = untilFor(e.dur); if (u != null) e.until = u; delete e.dur; c.effects.push(e); }
+// everything currently running on a character, for the sheet and the DM's overview
+function activeList(c){
+  const d = D(c), out = [];
+  if (c.ac2 && used(c,'armorOn')) out.push({n: c.ac2Label || 'Alternative AC', note: `AC ${c.ac2}`, k: /mage armor/i.test(c.ac2Label || '') ? 'mage armor' : '', rm:'armor'});
+  if (d.innate) out.push({n:'Innate Sorcery', note:`spell save DC ${d.dc}, Advantage on spell attacks`, ref:'cf|Innate Sorcery', rm:'innate', until: c.used.innateUntil});
+  c.effects.forEach(e => out.push({n: e.n, note: e.note || '', k: e.k || '', rm: e.id, until: e.until}));
+  return out;
+}
+const effLink = (x) => x.k && R.spells[x.k] ? lk('spell', x.k, x.n) : x.ref ? lk(x.ref.split('|')[0], x.ref.split('|').slice(1).join('|'), x.n) : esc(x.n);
+const splitList = v => String(v || '').split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
+function defences(c){
+  const L = c.level, out = {res:[], imm:[], cimm:[], adv:[], senses:[], other:[]};
+  const add = (k, t, src) => out[k].push({t, src});
+  if (c.sub === 'Celestial' && L >= 6) add('res', 'Radiant', lk('sf','Radiant Soul','Radiant Soul'));
+  if (c.sub === 'Aberrant' && L >= 6) { add('res', 'Psychic', lk('sf','Psychic Defenses','Psychic Defenses')); add('adv', 'Saves to avoid or end Charmed and Frightened', lk('sf','Psychic Defenses','Psychic Defenses')); }
+  if (c.species === 'Tabaxi') add('senses', 'Darkvision 60 ft', lk('species','Darkvision','Darkvision'));
+  if (hasInv(c, "Devil's Sight")) add('senses', 'Sees normally in magical and nonmagical Darkness, 120 ft', lk('opt',"devil's sight","Devil's Sight"));
+  if (hasInv(c, 'Witch Sight')) add('senses', 'Sees through illusions and shapechangers, 30 ft', lk('opt','witch sight','Witch Sight'));
+  if (c.cls === 'Rogue' && L >= 5) add('other', 'Reaction: halve an attack\'s damage', lk('cf','Uncanny Dodge','Uncanny Dodge'));
+  if (c.cls === 'Rogue' && L >= 7) add('other', 'Dex saves for half: no damage on a success', lk('cf','Evasion','Evasion'));
+  if (c.cls === 'Rogue' && L >= 18) add('other', 'Attacks never have Advantage against them', lk('cf','Elusive','Elusive'));
+  if (c.sub === 'Celestial' && L >= 10) add('other', 'Temporary HP after each rest', lk('sf','Celestial Resilience','Celestial Resilience'));
+  splitList(c.resist).forEach(t => add('res', t)); splitList(c.immune).forEach(t => add('imm', t)); splitList(c.condImmune).forEach(t => add('cimm', t));
+  splitList(c.senses).forEach(t => add('senses', t)); splitList(c.defNotes).forEach(t => add('other', t));
+  return out;
+}
+const defTxt = arr => arr.map(x => x.src ? `${esc(x.t)} <span class="m">(${x.src})</span>` : esc(x.t)).join(', ');
 function statusStrip(c){
   const bits = [];
-  if (c.conc && R.spells[c.conc]) bits.push(`<span class="stat conc">Concentrating: ${lk('spell', c.conc, R.spells[c.conc].n)} <button class="xs" data-act="dropconc" aria-label="Drop concentration">Drop</button></span>`);
+  if (c.conc && R.spells[c.conc]) bits.push(`<span class="stat conc">Concentrating: ${lk('spell', c.conc, R.spells[c.conc].n)}${esc(untilTxt(c.concUntil))} <button class="xs" data-act="dropconc" aria-label="Drop concentration">Drop</button></span>`);
+  activeList(c).forEach(x => bits.push(`<span class="stat act"><span>${effLink(x)}${x.note ? ` <span class="m">${esc(x.note)}</span>` : ''}${esc(untilTxt(x.until))}</span> <button class="xs" data-uneff="${esc(x.rm)}" aria-label="End ${esc(x.n)}">End</button></span>`));
   c.conditions.forEach(k => { const g = R.gloss['cond|' + k]; if (g) bits.push(`<span class="stat">${lk('cond', k, g.n)} <button class="xs" data-uncond="${esc(k)}" aria-label="Remove ${esc(g.n)}">×</button></span>`); });
   if (c.exhaustion) bits.push(`<span class="stat">${lk('cond','exhaustion','Exhaustion')} ${c.exhaustion}: −${c.exhaustion * 2} to d20 tests</span>`);
   return bits.length ? `<div class="stats">${bits.join('')}</div>` : '';
+}
+function endEffect(c, rm){
+  if (rm === 'armor') c.used.armorOn = 0;
+  else if (rm === 'innate') { c.used.innateOn = 0; delete c.used.innateUntil; }
+  else c.effects = c.effects.filter(e => e.id !== rm);
+}
+function toggleInnate(c){
+  if (used(c,'innateOn')) { endEffect(c, 'innate'); commit(c); toast('Innate Sorcery ends'); return; }
+  if (used(c,'innate') < 2) c.used.innate = used(c,'innate') + 1;
+  else if (c.level >= 7 && spLeft(c) >= 2) { c.used.sp = used(c,'sp') + 2; toast('Sorcery Incarnate: 2 Sorcery Points spent'); }
+  else { toast(c.level >= 7 ? 'No uses or Sorcery Points left' : 'No uses left. They come back on a Long Rest.'); return; }
+  c.used.innateOn = 1; const u = untilFor('1 minute'); if (u != null) c.used.innateUntil = u;
+  commit(c); toast(`Innate Sorcery active: spell save DC ${D(c).dc}, Advantage on spell attacks`);
+}
+// Font of Magic: Sorcery Points into spell slots and back again
+function fontDrawer(c){
+  const r = row(c), left = spLeft(c), slots = slotsOf(c);
+  const make = FONT.map(([lv, cost, minL]) => c.level < minL ? '' :
+    `<button class="btn ${left >= cost ? '' : 'dim'}" data-mkslot="${lv}" ${left >= cost ? '' : 'disabled'}>${ord(lv)}-level slot <span class="m">${cost} points</span></button>`).join('');
+  const brk = slots.filter(s => s.left).map(s => `<button class="btn" data-brkslot="${s.lv}" ${left >= r.sp ? 'disabled' : ''}>Spend a ${ord(s.lv)}-level slot <span class="m">${left >= r.sp ? 'points full' : `+${Math.min(s.lv, r.sp - left)} point${Math.min(s.lv, r.sp - left) === 1 ? '' : 's'}`}</span></button>`).join('');
+  const made = slots.filter(s => s.x).map(s => `${s.x} × ${ord(s.lv)}`).join(', ');
+  const body = `<div class="fontsp"><span class="big">${left}</span><span>of ${r.sp} Sorcery Points left</span></div>
+    ${made ? `<p class="note">Created slots ready to use: <b>${made}</b>. They vanish on a Long Rest.</p>` : ''}
+    <h4>Create a spell slot <span class="m">${lk('rule','bonus action','Bonus Action')}</span></h4>
+    <div class="fontgrid">${make || '<p class="note">You can create slots from Sorcerer level 2.</p>'}</div>
+    <h4>Turn a spell slot into points <span class="m">no action</span></h4>
+    <div class="fontgrid">${brk || '<p class="note">No spell slots left to convert.</p>'}</div>
+    ${left >= r.sp && slots.some(s => s.left) ? '<p class="note">You are at your maximum, so a slot would give no points.</p>' : ''}
+    <p class="note">Slots you create stack on top of your normal ones and show as outlined pips on the Spells tab. ${lk('cf','Font of Magic','Font of Magic rules')}</p>`;
+  openDrawer('Font of Magic', body, '', el => el.addEventListener('click', e => {
+    const mk = e.target.closest('[data-mkslot]'), bk = e.target.closest('[data-brkslot]');
+    if (mk) { const [lv, cost] = FONT[+mk.dataset.mkslot - 1]; if (spLeft(c) < cost) return; c.used.sp = used(c,'sp') + cost; c.used['x'+lv] = used(c,'x'+lv) + 1; commit(c); fontDrawer(c); toast(`${ord(lv)}-level slot created for ${cost} Sorcery Points`); }
+    if (bk) { const lv = +bk.dataset.brkslot, s = slotsOf(c).find(x => x.lv === lv); if (!s || !s.left) return;
+      if (s.max - used(c,'s'+lv) > 0) c.used['s'+lv] = used(c,'s'+lv) + 1; else c.used['x'+lv] = s.x - 1;
+      const gain = Math.min(lv, r.sp - spLeft(c)); c.used.sp = Math.max(0, used(c,'sp') - gain); commit(c); fontDrawer(c); toast(`${ord(lv)}-level slot spent: +${gain} Sorcery Point${gain === 1 ? '' : 's'}`); }
+  }), () => fontDrawer(c));
+}
+function effectDrawer(c){
+  const sug = ['Dodging','Hidden','Bless','Haste','Bardic Inspiration','Guidance','Help (Advantage)','Heroism','Shield of Faith'];
+  openDrawer('Add an effect', `<p class="note">For anything running on ${esc(c.name)} that the table should see: a buff from someone else, a disguise, a feature you switched on. Spells you cast from this app are added for you.</p>
+    <div class="field"><label for="ef-n">Effect</label><input id="ef-n" list="ef-sug" placeholder="Bless, Hidden, Rage…"><datalist id="ef-sug">${sug.map(x => `<option value="${esc(x)}">`).join('')}</datalist></div>
+    <div class="field"><label for="ef-note">Detail (optional)</label><input id="ef-note" placeholder="+1d4 to attacks and saves"></div>
+    ${inFight() ? '<label class="pick" style="border:0"><input type="checkbox" id="ef-min"><div class="main">Lasts 1 minute (10 rounds) from now</div></label>' : ''}
+    <div class="chips">${sug.map(x => `<button class="chip" data-sug="${esc(x)}">${esc(x)}</button>`).join(' ')}</div>`,
+    '<button class="btn pri" data-ok>Add</button>', el => {
+      setTimeout(() => el.querySelector('#ef-n').focus(), 50);
+      el.addEventListener('click', e => {
+        const sg = e.target.closest('[data-sug]'); if (sg) { el.querySelector('#ef-n').value = sg.dataset.sug; return; }
+        if (!e.target.closest('[data-ok]')) return;
+        const n = el.querySelector('#ef-n').value.trim(); if (!n) { toast('Give the effect a name'); return; }
+        const k = R.spells[n.toLowerCase()] ? n.toLowerCase() : '';
+        const m = el.querySelector('#ef-min');
+        addEffect(c, {n, note: el.querySelector('#ef-note').value.trim(), k, dur: m && m.checked ? '1 minute' : ''});
+        commit(c); closeDrawer(); toast(n + ' added');
+      });
+    });
 }
 function renderDeath(c){
   const pips = (id,n) => Array.from({length:3}, (_,i) => `<button class="pip" data-pip="${id}" data-i="${i}" data-used="${i < n ? 0 : 1}" aria-label="${id} ${i+1}"></button>`).join('');
@@ -391,7 +502,7 @@ function atkCalc(c, a){
   const abm = a.ab === 'spell' ? d.cm : (a.ab ? d.m[a.ab] : 0);
   let hit = '', hitMod = null, dmg = '', expr = '', extra = '';
   if (a.kind === 'atk') { hitMod = d.pb + abm + (a.magic || 0); hit = sgn(hitMod); }
-  if (a.kind === 'save') hit = `DC ${d.dc} ${a.save}`;
+  if (a.kind === 'save') hit = `DC ${a.ab === 'spell' || a.sp ? d.dc : 8 + d.pb + abm} ${a.save}`;
   if (a.die === 'sneak') { const n = cl(c).table[c.level-1].sa; dmg = expr = `${n}d6`; if (c.sub === 'Assassin') extra = ` · +${c.level} in round 1`; }
   else {
     let [n, f] = a.die.split('d'); n = +n;
@@ -404,7 +515,8 @@ function atkCalc(c, a){
   }
   let rng = a.rng || (a.sp && R.spells[a.sp] ? R.spells[a.sp].r : '');
   if (a.sp && c.invTargets['Eldritch Spear'] === a.sp) rng = `${(parseInt(R.spells[a.sp].r, 10) || 120) + 30 * c.level} ft`;
-  return {hit, hitMod, dmg, expr, extra, rng, beams: a.scale === 'beams' ? d.tier : 1};
+  const adv = a.kind === 'atk' && a.ab === 'spell' && d.innate;
+  return {hit, hitMod, dmg, expr, extra: extra + (adv ? ' · Advantage' : ''), rng, adv, beams: a.scale === 'beams' ? d.tier : 1};
 }
 function atkRows(c){
   return (c.attacks || []).map((a,i) => {
@@ -420,7 +532,7 @@ function resRows(c){
       ? `<div class="pips">${Array.from({length:r.max}, (_,i) => `<button class="pip" data-res="${r.id}" data-i="${i}" data-used="${i < left ? 0 : 1}" aria-label="${esc(r.n)} ${i+1}"></button>`).join('')}</div>`
       : `<div class="counter"><button data-cnt="${r.id}" data-d="1" aria-label="Spend one">−</button><b>${left}/${r.max}</b><button data-cnt="${r.id}" data-d="-1" aria-label="Regain one">+</button></div>`;
     const [ty, ...rest] = (r.ref || '').split('|');
-    return `<div class="res"><div class="main"><div class="t">${r.ref ? lk(ty, rest.join('|'), r.n) : esc(r.n)}</div><div class="m">${esc(r.sub)}${r.roll === 'heal' ? ` <button class="btn sm" data-roll="heal">Roll</button>` : ''}</div></div>${ctl}</div>`;
+    return `<div class="res"><div class="main"><div class="t">${r.ref ? lk(ty, rest.join('|'), r.n) : esc(r.n)}</div><div class="m">${esc(r.sub)}${r.roll === 'heal' ? ` <button class="btn sm" data-roll="heal">Roll</button>` : ''}${r.btn ? ` <button class="btn sm ${r.btn[0] === 'innate' && used(c,'innateOn') ? 'pri' : ''}" data-act="${r.btn[0]}">${r.btn[1]}</button>` : ''}</div></div>${ctl}</div>`;
   }).join('');
 }
 function quickActions(c){
@@ -454,11 +566,20 @@ function rollStrip(){
   const r = rolls[0];
   return `<div class="rollstrip" data-act="rolllog" role="button" tabindex="0"><span class="rv ${r.nat === 20 ? 'n20' : r.nat === 1 ? 'n1' : ''}">${esc(r.total)}</span><span class="main"><b>${esc(r.label)}</b><br><span class="m">${esc(r.detail)}</span></span><span class="m">History</span></div>`;
 }
+function turnBar(c){
+  if (!inFight() || !combat.turn) return '';
+  const cur = combat.list.find(e => e.id === combat.turn); if (!cur) return '';
+  const nx = nextEntry(1), mine = cur.pc === (c && c.id), next = nx && c && nx.pc === c.id && !mine;
+  return `<div class="turnbar ${mine ? 'mine' : next ? 'next' : ''}" data-go="init" role="button" tabindex="0"><span class="rnd">Round ${combat.round}</span><span class="main">${mine ? '<b>Your turn</b>' : `<b>${esc(eName(cur))}</b>'s turn`}${next ? ' · you are next' : nx && !mine ? ` · then ${esc(eName(nx))}` : ''}</span><span class="m">Tracker ›</span></div>`;
+}
 function renderCombat(c){
-  return `${rollStrip()}<h2 class="sec">Attacks <span class="aside">tap to roll <button class="btn sm" data-act="editattacks">Edit</button></span></h2><div class="card list">${atkRows(c)}</div>
+  const act = activeList(c);
+  return `${turnBar(c)}${rollStrip()}<h2 class="sec">Attacks <span class="aside">tap to roll <button class="btn sm" data-act="editattacks">Edit</button></span></h2><div class="card list">${atkRows(c)}</div>
    <h2 class="sec">Conditions <span class="aside"><button class="btn sm" data-act="addcond">Add or remove</button></span></h2>
    <div class="card list">${c.conditions.length ? `<div class="row"><div class="main">${c.conditions.map(k => R.gloss['cond|'+k] ? lk('cond', k, R.gloss['cond|'+k].n) : '').join(', ')}</div></div>` : '<div class="row"><div class="main note">No conditions.</div></div>'}
    <div class="res"><div class="main"><div class="t">${lk('cond','exhaustion','Exhaustion')}</div><div class="m">Each level: −2 to d20 tests and −5 ft Speed. Level 6 is death.</div></div><div class="counter"><button data-exh="-1" aria-label="Lower exhaustion">−</button><b>${c.exhaustion}</b><button data-exh="1" aria-label="Raise exhaustion">+</button></div></div></div>
+   <h2 class="sec">Active effects <span class="aside"><button class="btn sm" data-act="addeff">Add</button></span></h2>
+   <div class="card list">${c.conc && R.spells[c.conc] ? `<div class="row"><div class="main"><div class="m">Concentrating${esc(untilTxt(c.concUntil))}</div>${lk('spell', c.conc, R.spells[c.conc].n)}</div><button class="btn sm" data-act="dropconc">Drop</button></div>` : ''}${act.map(x => `<div class="row"><div class="main"><div>${effLink(x)}</div>${x.note || x.until != null ? `<div class="m">${esc(x.note)}${esc(untilTxt(x.until))}</div>` : ''}</div><button class="btn sm" data-uneff="${esc(x.rm)}">End</button></div>`).join('')}${!act.length && !c.conc ? '<div class="row"><div class="main note">Nothing running. Spells you cast here appear automatically.</div></div>' : ''}</div>
    ${quickActions(c)}
    <h2 class="sec">Resources <span class="aside">tap a pip to spend or regain</span></h2><div class="card list">${resRows(c)}</div>`;
 }
@@ -479,11 +600,12 @@ function spellRows(c){
 function renderSpells(c){
   const d = D(c), list = spellList(c), f = ui.filter[ui.cur] || 'all';
   const r = row(c), slots = slotsOf(c);
-  const head = `<div class="spellhead"><div class="vt"><div class="k">${lk('rule','difficulty class','Save DC')}</div><div class="v">${d.dc}</div></div><div class="vt"><div class="k">${lk('rule','spell attack','Spell attack')}</div><div class="v">${sgn(d.atk)}</div></div><div class="vt"><div class="k">Ability</div><div class="v" style="font-size:18px">${c.castAb.toUpperCase()} ${sgn(d.cm)}</div></div></div>`;
+  const head = `<div class="spellhead"><div class="vt ${d.innate ? 'boost' : ''}"><div class="k">${lk('rule','difficulty class','Save DC')}</div><div class="v">${d.dc}</div>${d.innate ? `<div class="s">Innate +1 (was ${d.baseDc})</div>` : ''}</div><div class="vt ${d.innate ? 'boost' : ''}"><div class="k">${lk('rule','spell attack','Spell attack')}</div><div class="v">${sgn(d.atk)}</div>${d.innate ? '<div class="s">with Advantage</div>' : ''}</div><div class="vt"><div class="k">Ability</div><div class="v" style="font-size:18px">${c.castAb.toUpperCase()} ${sgn(d.cm)}</div></div></div>
+    ${c.cls === 'Sorcerer' ? `<div class="innatebar ${d.innate ? 'on' : ''}"><div class="main"><b>${lk('cf','Innate Sorcery','Innate Sorcery')}</b> <span class="m">${d.innate ? `active${esc(untilTxt(c.used.innateUntil))}: DC ${d.dc}, Advantage on spell attacks` : `${2 - used(c,'innate')} of 2 uses left${c.level >= 7 ? ', or 2 Sorcery Points' : ''}`}</span></div><button class="btn sm ${d.innate ? '' : 'pri'}" data-act="innate" aria-pressed="${d.innate}">${d.innate ? 'End' : 'Activate'}</button></div>` : ''}`;
   let slotHtml = '';
   if (c.cls === 'Warlock') slotHtml = `<div class="slotrow"><span class="lbl">${lk('cf','Pact Magic','Pact')} ${ord(r.sl)}</span>${pipsFor(c,'pact',r.slots)}</div>`;
-  if (slots.length) slotHtml = slots.map(s => `<div class="slotrow"><span class="lbl">${ord(s.lv)}</span>${pipsFor(c,'s'+s.lv,s.max)}</div>`).join('');
-  if (c.cls === 'Sorcerer') slotHtml += `<div class="slotrow"><span class="lbl">${lk('cf','Font of Magic','Points')}</span><div class="counter"><button data-cnt="sp" data-d="1" aria-label="Spend one">−</button><b>${r.sp - used(c,'sp')}/${r.sp}</b><button data-cnt="sp" data-d="-1" aria-label="Regain one">+</button></div></div>`;
+  if (slots.length) slotHtml = slots.map(s => `<div class="slotrow"><span class="lbl">${ord(s.lv)}</span>${pipsFor(c,'s'+s.lv,s.max, s.x)}</div>`).join('');
+  if (c.cls === 'Sorcerer' && r.sp) slotHtml += `<div class="slotrow"><span class="lbl">${lk('cf','Font of Magic','Points')}</span><div class="counter"><button data-cnt="sp" data-d="1" aria-label="Spend one">−</button><b>${r.sp - used(c,'sp')}/${r.sp}</b><button data-cnt="sp" data-d="-1" aria-label="Regain one">+</button></div><button class="btn sm pri" data-act="font" style="margin-left:auto">Convert</button></div>`;
   const levels = [...new Set(list.map(s => R.spells[s.k].l))].sort((a,b) => a-b);
   const fl = [['all','All'],['prep','Ready'],...levels.map(l => [String(l), l === 0 ? 'Cantrips' : ord(l)])];
   const warn = checks(c).filter(x => ['can','prep','over'].includes(x.k)).map(x => `<div class="warnbox"><div class="main">${esc(x.msg)}</div>${x.k !== 'over' ? `<button class="btn sm" data-fix="${x.k}">Choose</button>` : ''}</div>`).join('');
@@ -498,9 +620,9 @@ function renderSpells(c){
    <div class="filters" role="group" aria-label="Filter spells">${fl.map(([k,l]) => `<button data-filter="${k}" aria-pressed="${k === f}">${l}</button>`).join('')}</div>
    <div class="card list" style="margin-top:8px" id="splist">${spellRows(c)}</div>`;
 }
-function pipsFor(c,id,max){
+function pipsFor(c,id,max,extra){
   const left = Math.max(0, max - used(c,id));
-  return `<div class="pips">${Array.from({length:max}, (_,i) => `<button class="pip" data-res="${id}" data-i="${i}" data-used="${i < left ? 0 : 1}" aria-label="slot ${i+1}"></button>`).join('')}</div>`;
+  return `<div class="pips">${Array.from({length:max}, (_,i) => `<button class="pip" data-res="${id}" data-i="${i}" data-used="${i < left ? 0 : 1}" aria-label="slot ${i+1}"></button>`).join('')}${Array.from({length:extra || 0}, (_,i) => `<button class="pip x" data-xslot="${id.slice(1)}" aria-label="Created slot ${i+1}, tap to spend" title="Created with Font of Magic"></button>`).join('')}</div>`;
 }
 function featBlock(key, name, sub, h, own, url, extra){
   const t = textFor(key, h, own);
@@ -565,6 +687,11 @@ function renderNotes(c){
    <h2 class="sec">Combat numbers</h2>
    <div class="grid2">${inp('hpMax','HP maximum','number')}${inp('ac','Armour Class','number')}${inp('acNote','What gives that AC','', 'Studded leather, shield…')}${inp('ac2','Alternative AC (optional)','number')}${inp('ac2Label','Name of the alternative','', 'Mage Armor, Shield of Faith…')}${inp('initMisc','Extra Initiative bonus','number')}</div>
    <label class="pick" style="border:0"><input type="checkbox" data-check="initAdv" ${c.initAdv ? 'checked' : ''}><div class="main">Advantage on Initiative</div></label>
+   <h2 class="sec">Defences and senses</h2>
+   ${(() => { const df = defences(c), auto = ['res','adv','senses','other'].flatMap(k => df[k].filter(x => x.src).map(x => `${esc(x.t)} (${x.src})`)); return auto.length ? `<div class="callout">From your features: ${auto.join('; ')}</div>` : ''; })()}
+   <div class="grid2">${inp('resist','Damage resistances','', 'Fire, Poison…')}${inp('immune','Damage immunities','', 'Poison…')}${inp('condImmune','Condition immunities','', 'Charmed, Poisoned…')}${inp('senses','Senses','', 'Darkvision 60 ft')}</div>
+   ${inp('defNotes','Other defences','', 'Advantage on saves against being Frightened…')}
+   <p class="note">Separate entries with commas. These show on the Party page for the DM.</p>
    <h2 class="sec">Attacks <span class="aside"><button class="btn sm" data-act="editattacks">Edit attacks</button></span></h2>
    <h2 class="sec">Proficiencies</h2>
    <div class="grid2">${inp('armour','Armour training')}${inp('weapons','Weapons')}${inp('tools','Tools')}${inp('languages','Languages')}</div>
@@ -586,17 +713,13 @@ function renderNotes(c){
 // ---------- party page ----------
 function renderParty(){
   const m = chars.mule, mp = Math.max(0, Math.min(100, m.hp / m.hpMax * 100));
-  const members = PCS.map(id => {
-    const c = chars[id], d = D(c), pct = Math.max(0, Math.min(100, c.hp / c.hpMax * 100));
-    const st = [c.conc && R.spells[c.conc] ? `Concentrating: ${R.spells[c.conc].n}` : '', ...c.conditions.map(k => (R.gloss['cond|'+k] || {}).n), c.exhaustion ? `Exhaustion ${c.exhaustion}` : ''].filter(Boolean);
-    return `<button class="member" data-go="${id}" data-mc="${id}"><span class="mrow">${avatar(c, 'sm').replace('<button', '<span').replace('</button>', '</span>').replace(/data-portrait="[^"]*"/, '')}<span class="mn">${esc(c.name)}</span></span><span class="m">Level ${c.level} ${esc(c.sub)} ${esc(c.cls)}</span>
-      <span class="mstats"><span><b>${c.hp}</b>/${c.hpMax} HP</span><span>AC <b>${c.ac2 && used(c,'armorOn') ? c.ac2 : c.ac}</b></span><span>PP <b>${d.passive}</b></span></span>
-      <span class="bar ${pct <= 25 ? 'crit' : pct <= 50 ? 'low' : ''}"><i style="width:${pct}%"></i></span>${st.length ? `<span class="m warnc">${esc(st.join(' · '))}</span>` : ''}</button>`;
-  }).join('');
+  const members = PCS.map(id => memberCard(chars[id])).join('');
   const quests = party.quests.slice().sort((a,b) => (a.done - b.done) || (b.created || 0) - (a.created || 0));
   const log = party.log.slice().sort((a,b) => (b.created || 0) - (a.created || 0));
   const npcs = party.npcs.slice().sort((a,b) => (a.n || '').localeCompare(b.n || ''));
   return `<header class="hero"><h1>The Party</h1><div class="sub">Shared with everyone who can edit this page ${syncChip()}</div></header>
+   ${turnBar(null)}
+   <h2 class="sec">At a glance <span class="aside"><button class="btn sm" data-go="init">Initiative</button></span></h2>
    <div class="members">${members}</div>
    ${rolls.length ? `<h2 class="sec">Recent rolls <span class="aside"><button class="btn sm" data-dice>Dice tray</button></span></h2><div class="card list">${rolls.slice(0,6).map(r => `<div class="row"><span class="rv sm ${r.nat === 20 ? 'n20' : r.nat === 1 ? 'n1' : ''}">${esc(r.total)}</span><div class="main"><b>${esc(r.label)}</b> <span class="m">${esc(r.who)} · ${esc(r.at)}</span><br><span class="m">${esc(r.detail)}</span></div></div>`).join('')}</div>` : ''}
    <h2 class="sec">Quests <span class="aside">${quests.filter(q => !q.done).length} open</span></h2>
@@ -621,6 +744,202 @@ function renderParty(){
     <div class="row"><div class="main"><div class="m">Special</div>${esc(m.special)}</div><button class="btn sm" data-act="mule-rest">Digested a boat</button></div></div>
    <div class="field" style="margin-top:10px"><label for="m-cargo">Mule's cargo</label><textarea id="m-cargo" data-mfield="cargo">${esc(m.cargo)}</textarea></div>
    <div class="field"><label for="m-notes">Mule notes</label><textarea id="m-notes" data-mfield="notes">${esc(m.notes)}</textarea></div>`;
+}
+// the DM's view of one character: numbers, what is running, what they shrug off
+function resSummary(c){
+  const r = row(c), out = [];
+  if (c.cls === 'Warlock') out.push(`Pact ${r.slots - used(c,'pact')}/${r.slots} (${ord(r.sl)})`);
+  if (c.cls === 'Sorcerer') { const sl = slotsOf(c); if (sl.length) out.push('Slots ' + sl.map(s => `${ord(s.lv)} ${s.left}${s.x ? ` (${s.x} made)` : ''}`).join(', ')); if (r.sp) out.push(`Sorcery Points ${spLeft(c)}/${r.sp}`); }
+  if (c.sub === 'Celestial' && c.level >= 3) out.push(`Healing Light ${1 + c.level - used(c,'heal')}d6`);
+  if (c.cls === 'Rogue') out.push(`Sneak Attack ${r.sa}d6${c.level >= 5 ? `, Cunning Strike DC ${8 + D(c).pb + D(c).m.dex}` : ''}`);
+  out.push(`Hit Dice ${c.level - used(c,'hd')}/${c.level}`);
+  return out.join(' · ');
+}
+function memberCard(c){
+  const d = D(c), pct = Math.max(0, Math.min(100, c.hp / c.hpMax * 100)), df = defences(c), act = activeList(c);
+  const lines = [];
+  const L = (k, v) => { if (v) lines.push(`<div class="ml"><span class="mk">${k}</span><span class="mv">${v}</span></div>`); };
+  if (c.hp <= 0) L('Dying', `Death saves: ${used(c,'dS')} successes, ${used(c,'dF')} failures`);
+  L('Concentrating', c.conc && R.spells[c.conc] ? lk('spell', c.conc, R.spells[c.conc].n) + esc(untilTxt(c.concUntil)) : '');
+  L('Active', act.map(x => effLink(x) + (x.note ? ` <span class="m">(${esc(x.note)})</span>` : '') + esc(untilTxt(x.until))).join(', '));
+  L('Conditions', c.conditions.map(k => R.gloss['cond|'+k] ? lk('cond', k, R.gloss['cond|'+k].n) : '').filter(Boolean).concat(c.exhaustion ? [`${lk('cond','exhaustion','Exhaustion')} ${c.exhaustion}`] : []).join(', '));
+  L('Resistant', defTxt(df.res)); L('Immune', defTxt(df.imm)); L('Can\'t be', defTxt(df.cimm));
+  L('Advantage', defTxt(df.adv)); L('Senses', defTxt(df.senses)); L('Defences', defTxt(df.other));
+  L('Resources', esc(resSummary(c)));
+  const ac = c.ac2 && used(c,'armorOn') ? c.ac2 : c.ac;
+  const caster = (c.spells || []).length > 0;
+  return `<div class="member" data-mc="${c.id}" data-ctx="${c.id}">
+    <button class="mhead" data-go="${c.id}">${avatar(c, 'sm').replace('<button', '<span').replace('</button>', '</span>').replace(/data-portrait="[^"]*"/, '')}<span class="main"><span class="mn">${esc(c.name)}</span><span class="m">Level ${c.level} ${esc(c.sub)} ${esc(c.cls)} · ${esc(c.species)}</span></span>${used(c,'insp') ? '<span class="insp" title="Heroic Inspiration">★</span>' : ''}<span class="m">Sheet ›</span></button>
+    <div class="mhp"><span><b>${c.hp}</b>/${c.hpMax} HP${c.temp ? ` <span class="m">+${c.temp} temp</span>` : ''}</span><span class="bar ${pct <= 25 ? 'crit' : pct <= 50 ? 'low' : ''}"><i style="width:${pct}%"></i></span></div>
+    <div class="mgrid"><div><span>AC</span><b>${ac}</b></div><div><span>Init</span><b>${sgn(d.init)}${c.initAdv ? '<small>adv</small>' : ''}</b></div><div><span>Speed</span><b class="sm">${esc(String(c.speed).split(',')[0])}</b></div>${caster ? `<div class="${d.innate ? 'boost' : ''}"><span>Spell DC</span><b>${d.dc}</b></div>` : `<div><span>Strike DC</span><b>${8 + d.pb + d.m.dex}</b></div>`}</div>
+    <div class="mgrid"><div><span>Passive Perc.</span><b>${d.passive}</b></div><div><span>Passive Inv.</span><b>${d.pInv}</b></div><div><span>Passive Insight</span><b>${d.pIns}</b></div><div><span>Saves</span><b class="sm">${c.saves.map(a => a.toUpperCase()).join(' ')}</b></div></div>
+    ${lines.join('')}
+  </div>`;
+}
+// ---------- initiative tracker ----------
+const eName = e => e.pc && chars[e.pc] ? chars[e.pc].name : (e.n || 'Creature');
+const eMod = e => e.pc && chars[e.pc] ? D(chars[e.pc]).init : (e.mod || 0);
+const eAdv = e => e.pc && chars[e.pc] ? !!chars[e.pc].initAdv : !!e.adv;
+const fighting = () => combat.list.filter(e => !e.standby);
+const takesTurn = e => !e.standby && e.init != null && !(e.down && !e.pc);
+function nextEntry(dir){
+  const order = combat.list.filter(takesTurn); if (!order.length) return null;
+  const i = order.findIndex(e => e.id === combat.turn);
+  if (i < 0) return order[0];
+  return order[(i + dir + order.length) % order.length];
+}
+function rollInit(e){
+  const a = d20(), b = d20(), pick = eAdv(e) ? Math.max(a,b) : a;
+  e.init = pick + eMod(e); e.nat = pick;
+  return `${eName(e)}: ${e.init}${eAdv(e) ? ` (Advantage ${a}, ${b})` : ` (d20 ${a} ${sgn(eMod(e))})`}`;
+}
+function sortCombat(){
+  combat.list.sort((x, y) => (x.standby - y.standby) || ((y.init ?? -99) - (x.init ?? -99)) || (eMod(y) - eMod(x)) || ((y.pc ? 1 : 0) - (x.pc ? 1 : 0)) || eName(x).localeCompare(eName(y)));
+}
+function ensureParty(){ PCS.forEach(id => { const e = combat.list.find(x => x.pc === id); if (!e) combat.list.push({id: uid(), pc: id, kind: 'pc', init: null, conds: []}); else e.standby = false; }); }
+function uniqueName(base){
+  const names = new Set(combat.list.map(eName));
+  if (!names.has(base) && !names.has(base + ' 1')) return base;
+  let i = 2; while (names.has(`${base} ${i}`)) i++; return `${base} ${i}`;
+}
+function addCreatures(mod, value){
+  const ia = ui.ia, n = Math.max(1, Math.min(20, parseInt(ia.c, 10) || 1)), ally = !!ia.ally;
+  const base = (ia.n || '').trim() || (ally ? 'Ally' : 'Enemy');
+  const hp = parseInt(ia.hp, 10) || null, ac = parseInt(ia.ac, 10) || null;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const nm = n > 1 ? uniqueName(`${base} ${i + 1}`) : uniqueName(base);
+    const e = {id: uid(), n: nm, kind: ally ? 'ally' : 'enemy', mod: mod || 0, init: null, conds: [], note: ''};
+    if (hp) { e.hp = hp; e.max = hp; } if (ac) e.ac = ac;
+    if (value != null) e.init = value; else rollInit(e);
+    combat.list.push(e); out.push(`${e.n} ${e.init}`);
+  }
+  ui.ia.n = ''; ui.ia.c = 1; ui.ia.v = ''; ui.ia.hp = ''; ui.ia.ac = '';
+  saveCombat(); render(); toast('Added: ' + out.join(', '));
+}
+function nextTurn(dir){
+  const order = combat.list.filter(takesTurn);
+  if (!order.length) { toast('Give everyone an initiative first'); return; }
+  const i = order.findIndex(e => e.id === combat.turn);
+  if (dir > 0) {
+    if (i < 0 || combat.round < 1) { combat.round = Math.max(1, combat.round); combat.turn = order[0].id; }
+    else if (i === order.length - 1) {
+      combat.round++; combat.turn = order[0].id;
+      const over = PCS.map(id => chars[id]).flatMap(c => activeList(c).filter(x => x.until === combat.round - 1).map(x => `${c.name}'s ${x.n}`).concat(c.concUntil === combat.round - 1 && R.spells[c.conc] ? [`${c.name}'s ${R.spells[c.conc].n}`] : []));
+      toast(`Round ${combat.round}${over.length ? `. Time is up: ${over.join(', ')}` : ''}`);
+    }
+    else combat.turn = order[i + 1].id;
+  } else {
+    if (i <= 0) { if (combat.round > 1) { combat.round--; combat.turn = order[order.length - 1].id; } }
+    else combat.turn = order[i - 1].id;
+  }
+  saveCombat(); render();
+}
+function newCombat(){
+  combat.list = combat.list.filter(e => e.kind !== 'enemy').map(e => Object.assign({}, e, {init: null, nat: null, conds: [], down: false, standby: e.kind === 'ally'}));
+  ensureParty(); combat.round = 0; combat.turn = null;
+  saveCombat(); render(); toast('New combat. Enemies cleared, allies on standby.');
+}
+function setPcInit(id, total){
+  const e = combat.list.find(x => x.pc === id && !x.standby); if (!e) return;
+  if (e.init != null && combat.round > 0) return;
+  e.init = total; saveCombat();
+}
+function initRow(e){
+  const c = e.pc ? chars[e.pc] : null, cur = e.id === combat.turn && combat.round > 0;
+  const sub = [];
+  if (c) {
+    sub.push(`HP ${c.hp}/${c.hpMax}${c.temp ? ` +${c.temp}` : ''}`, `AC ${c.ac2 && used(c,'armorOn') ? c.ac2 : c.ac}`);
+    if (c.conc && R.spells[c.conc]) sub.push('Conc: ' + esc(R.spells[c.conc].n));
+    c.conditions.forEach(k => { const g = R.gloss['cond|'+k]; if (g) sub.push(esc(g.n)); });
+  } else {
+    if (e.ac) sub.push(`AC ${e.ac}`);
+    (e.conds || []).forEach(k => { const g = R.gloss['cond|'+k]; if (g) sub.push(esc(g.n)); });
+    if (e.note) sub.push(esc(e.note));
+  }
+  const kind = e.pc ? 'pc' : e.kind;
+  const down = c ? c.hp <= 0 : e.down;
+  const ini = e.init == null
+    ? `<div class="iset"><input class="ini" type="number" inputmode="numeric" id="iv-${e.id}" data-iniv="${e.id}" placeholder="–" aria-label="Initiative for ${esc(eName(e))}"><button class="xs" data-iroll="${e.id}" aria-label="Roll initiative for ${esc(eName(e))}">Roll</button></div>`
+    : `<button class="ival" data-iopen="${e.id}" aria-label="Initiative ${e.init}">${e.init}</button>`;
+  return `<div class="irow" data-k="${kind}" ${e.pc ? `data-mc="${e.pc}"` : ''} data-cur="${cur}" data-down="${!!down}">
+    ${ini}<button class="main" data-iopen="${e.id}"><span class="t">${cur ? '<span class="now">▶</span> ' : ''}${esc(eName(e))}${kind === 'ally' ? ' <span class="chip ally">ally</span>' : ''}${down ? ' <span class="chip">down</span>' : ''}</span>${sub.length ? `<span class="m">${sub.join(' · ')}</span>` : ''}</button>
+    ${!c && e.max ? `<button class="ihp" data-ihp="${e.id}" aria-label="Hit points for ${esc(eName(e))}"><b>${e.hp}</b><small>/${e.max}</small></button>` : ''}
+  </div>`;
+}
+function renderInit(){
+  const act = combat.list.filter(e => !e.standby), stand = combat.list.filter(e => e.standby);
+  const missing = act.filter(e => e.init == null).length;
+  const cur = combat.list.find(e => e.id === combat.turn);
+  const mods = [-4,-3,-2,-1,0,1,2,3,4,5,6,7,8];
+  const ia = ui.ia;
+  return `<header class="hero"><h1>Initiative</h1><div class="sub">${combat.round > 0 ? `<b>Round ${combat.round}</b>${cur ? ` · ${esc(eName(cur))}'s turn` : ''}` : 'Not started'} ${syncChip()}</div></header>
+   <div class="ictl"><button class="btn" data-iprev ${combat.round > 0 ? '' : 'disabled'} aria-label="Previous turn">‹ Back</button><button class="btn pri big" data-inext>${combat.round > 0 ? 'Next turn ›' : 'Start combat ›'}</button></div>
+   <div class="btnrow"><button class="btn sm" data-isort>Sort</button>${missing ? `<button class="btn sm" data-irollall>Roll the ${missing} missing</button>` : ''}<button class="btn sm" data-iparty>Add the party</button><button class="btn sm danger" data-inew>New combat</button></div>
+   ${missing ? `<p class="note">${missing} still need${missing === 1 ? 's' : ''} an initiative. Players can roll from their own sheet (it fills in here), type a real roll in the box, or tap Roll.</p>` : ''}
+   <div class="ilist">${act.map(initRow).join('') || '<div class="card"><div class="row"><div class="main note">Nobody in this fight yet. Add the party, then add creatures below.</div></div></div>'}</div>
+   <h2 class="sec">Add creatures</h2>
+   <div class="card iadd">
+    <div class="grid2"><div class="field"><label for="ia-n">Name (optional)</label><input id="ia-n" data-ia="n" value="${esc(ia.n)}" placeholder="Goblin"></div>
+     <div class="field"><label for="ia-c">How many</label><input id="ia-c" data-ia="c" type="number" inputmode="numeric" min="1" max="20" value="${esc(ia.c)}"></div>
+     <div class="field"><label for="ia-hp">HP (optional)</label><input id="ia-hp" data-ia="hp" type="number" inputmode="numeric" value="${esc(ia.hp)}"></div>
+     <div class="field"><label for="ia-ac">AC (optional)</label><input id="ia-ac" data-ia="ac" type="number" inputmode="numeric" value="${esc(ia.ac)}"></div></div>
+    <label class="pick allytick" style="border:0"><input type="checkbox" id="ia-ally" data-ia="ally" ${ia.ally ? 'checked' : ''}><div class="main">Ally <span class="m">shows green and stays for the next combat</span></div></label>
+    <div class="m" style="margin:6px 0 4px">Tap the Dexterity modifier to roll and add</div>
+    <div class="qgrid">${mods.map(m => `<button class="btn" data-qadd="${m}">${m < 0 ? '−' + Math.abs(m) : '+' + m}</button>`).join('')}</div>
+    <div class="addrow" style="margin-top:10px"><input id="ia-v" data-ia="v" type="number" inputmode="numeric" placeholder="Or type an initiative you rolled" aria-label="Initiative value" value="${esc(ia.v)}"><button class="btn pri" data-iaddv>Add</button></div>
+    <div class="btnrow" style="margin:8px 0 0"><button class="btn sm" data-ilair>Lair action (count 20)</button></div>
+   </div>
+   ${stand.length ? `<details class="standby"><summary>Allies standing by (${stand.length})</summary><div class="card list">${stand.map(e => `<div class="row"><div class="main"><div class="t">${esc(eName(e))}</div><div class="m">Dex ${sgn(e.mod || 0)}${e.max ? ` · HP ${e.hp}/${e.max}` : ''}${e.ac ? ` · AC ${e.ac}` : ''}</div></div><button class="btn sm pri" data-ijoin="${e.id}">Join</button><button class="btn sm ghost" data-irm="${e.id}" aria-label="Remove ${esc(eName(e))}">Remove</button></div>`).join('')}</div></details>` : ''}
+   <p class="note" style="margin-top:12px">Everyone sees the same tracker. Enemy rolls made here stay off the shared roll log.</p>`;
+}
+function initDrawer(id){
+  const e = combat.list.find(x => x.id === id); if (!e) return;
+  const c = e.pc ? chars[e.pc] : null;
+  const conds = e.conds || [];
+  const body = `${c ? `<p class="note">${esc(c.name)}'s HP, AC and conditions come from their sheet. <button class="btn sm" data-gopc="${c.id}">Open sheet</button></p>` : `
+    <div class="field"><label for="ie-n">Name</label><input id="ie-n" value="${esc(e.n || '')}"></div>`}
+    <div class="grid2"><div class="field"><label for="ie-i">Initiative</label><input id="ie-i" type="number" inputmode="numeric" value="${e.init ?? ''}"></div>
+    ${c ? '' : `<div class="field"><label for="ie-m">Dex modifier</label><input id="ie-m" type="number" inputmode="numeric" value="${e.mod || 0}"></div>
+    <div class="field"><label for="ie-hp">HP now</label><input id="ie-hp" type="number" inputmode="numeric" value="${e.hp ?? ''}"></div>
+    <div class="field"><label for="ie-max">HP max</label><input id="ie-max" type="number" inputmode="numeric" value="${e.max ?? ''}"></div>
+    <div class="field"><label for="ie-ac">AC</label><input id="ie-ac" type="number" inputmode="numeric" value="${e.ac ?? ''}"></div>`}</div>
+    ${c ? '' : `<div class="seg" role="group" aria-label="Side"><button data-iekind="enemy" aria-pressed="${e.kind === 'enemy'}">Enemy</button><button data-iekind="ally" aria-pressed="${e.kind === 'ally'}">Ally</button></div>
+    <label class="pick" style="border:0"><input type="checkbox" id="ie-down" ${e.down ? 'checked' : ''}><div class="main">Defeated <span class="m">greyed out and skipped</span></div></label>
+    <div class="field"><label for="ie-note">Note</label><input id="ie-note" value="${esc(e.note || '')}" placeholder="Bloodied, fleeing, has the key…"></div>
+    <div class="m" style="margin:8px 0 4px">Conditions</div><div class="chips">${CONDS.filter(k => R.gloss['cond|'+k]).map(k => `<button class="chip ${conds.includes(k) ? 'on' : ''}" data-iecond="${k}" aria-pressed="${conds.includes(k)}">${esc(R.gloss['cond|'+k].n)}</button>`).join(' ')}</div>`}
+    <div class="btnrow" style="margin-top:10px"><button class="btn sm" data-ieroll>Re-roll initiative</button>${combat.round > 0 ? '<button class="btn sm" data-ieturn>Make it their turn</button>' : ''}</div>`;
+  let kind = e.kind; const cs = new Set(conds);
+  openDrawer(esc(eName(e)), body, '<button class="btn danger" data-iedel>Remove</button><button class="btn pri" data-iesave>Save</button>', el => el.addEventListener('click', ev => {
+    const t = ev.target, g = k => el.querySelector('#' + k);
+    const gp = t.closest('[data-gopc]'); if (gp) { closeDrawer(); ui.cur = gp.dataset.gopc; render(); window.scrollTo(0,0); return; }
+    const kb = t.closest('[data-iekind]'); if (kb) { kind = kb.dataset.iekind; el.querySelectorAll('[data-iekind]').forEach(b => b.setAttribute('aria-pressed', b === kb)); return; }
+    const cb = t.closest('[data-iecond]'); if (cb) { const k = cb.dataset.iecond; if (cs.has(k)) cs.delete(k); else cs.add(k); cb.classList.toggle('on', cs.has(k)); cb.setAttribute('aria-pressed', cs.has(k)); return; }
+    if (t.closest('[data-ieroll]')) { const msg = rollInit(e); saveCombat(); closeDrawer(); render(); toast(msg); return; }
+    if (t.closest('[data-ieturn]')) { combat.turn = e.id; saveCombat(); closeDrawer(); render(); return; }
+    const del = t.closest('[data-iedel]'); if (del) { if (!del.dataset.sure) { del.dataset.sure = '1'; del.textContent = 'Tap again to remove'; return; } if (combat.turn === e.id) { const nx = nextEntry(1); combat.turn = nx && nx.id !== e.id ? nx.id : null; } combat.list = combat.list.filter(x => x.id !== e.id); saveCombat(); closeDrawer(); render(); return; }
+    if (t.closest('[data-iesave]')) {
+      const iv = g('ie-i').value.trim(); e.init = iv === '' ? null : parseInt(iv, 10);
+      if (!c) {
+        e.n = g('ie-n').value.trim() || e.n; e.mod = parseInt(g('ie-m').value, 10) || 0;
+        const num = k => { const v = parseInt(g(k).value, 10); return isNaN(v) ? null : v; };
+        e.max = num('ie-max'); e.hp = num('ie-hp'); if (e.max == null) { delete e.max; delete e.hp; } else if (e.hp == null) e.hp = e.max;
+        const ac = num('ie-ac'); if (ac == null) delete e.ac; else e.ac = ac;
+        e.kind = kind; e.down = g('ie-down').checked; e.note = g('ie-note').value.trim(); e.conds = [...cs];
+      }
+      saveCombat(); closeDrawer(); render(); toast('Saved');
+    }
+  }));
+}
+function initHpDrawer(id){
+  const e = combat.list.find(x => x.id === id); if (!e) return;
+  openDrawer(`${esc(eName(e))}: ${e.hp}/${e.max} HP`, '<input class="numin" id="ihn" type="number" inputmode="numeric" min="0" placeholder="0" aria-label="Amount"><div class="hpctl"><button class="btn danger" data-h="dmg">Damage</button><button class="btn pri" data-h="heal">Heal</button></div>', '', el => {
+    const inp = el.querySelector('#ihn'); setTimeout(() => inp.focus(), 50);
+    el.addEventListener('click', ev => { const b = ev.target.closest('[data-h]'); if (!b) return; const n = Math.max(0, parseInt(inp.value || '0', 10));
+      if (b.dataset.h === 'dmg') e.hp = Math.max(0, e.hp - n); else e.hp = Math.min(e.max, e.hp + n);
+      const was = e.down; e.down = e.hp <= 0;
+      saveCombat(); closeDrawer(); render(); if (e.down && !was) toast(`${eName(e)} is down`); });
+  });
 }
 function editItem(coll, id){
   const it = party[coll].find(x => x.id === id); if (!it) return;
@@ -652,9 +971,9 @@ function openDrawer(title, body, foot, onBind, reopen){
   if (onBind) onBind(el);
   return el;
 }
-function closeDrawer(){ const s = document.getElementById('scrim'); if (s) s.remove(); navStack = []; curReopen = null; }
+function closeDrawer(){ const s = document.getElementById('scrim'); if (s) s.remove(); navStack = []; curReopen = null; ctxOverride = null; }
 function toast(msg){ document.querySelectorAll('.toast').forEach(t => t.remove()); const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role','status'); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2800); }
-const ctxChar = () => (PCS.includes(ui.cur) ? chars[ui.cur] : null);
+const ctxChar = () => (ctxOverride && chars[ctxOverride]) ? chars[ctxOverride] : (PCS.includes(ui.cur) ? chars[ui.cur] : null);
 
 function openEntity(ty, key){
   const c = ctxChar();
@@ -712,8 +1031,8 @@ function spellDrawer(k, c){
   let callout = '';
   if (c && d) {
     const bits = [];
-    if (/saving throw/i.test(sp.h)) bits.push(`Your spell save DC: <b>${d.dc}</b>`);
-    if (/spell attack|attack roll/i.test(sp.h)) bits.push(`Your spell attack: <b>${sgn(d.atk)}</b>`);
+    if (/saving throw/i.test(sp.h)) bits.push(`Your spell save DC: <b>${d.dc}</b>${d.innate ? ' (Innate Sorcery +1)' : ''}`);
+    if (/spell attack|attack roll/i.test(sp.h)) bits.push(`Your spell attack: <b>${sgn(d.atk)}</b>${d.innate ? ' with Advantage (Innate Sorcery)' : ''}`);
     if (sp.l === 0 && /Cantrip Upgrade|level 5|levels 5/i.test((sp.hl || '') + sp.h)) bits.push(`Cantrip strength at level ${c.level}: <b>×${d.tier}</b> dice`);
     if (k === 'eldritch blast') bits.push(`Beams: <b>${d.tier}</b>${c.invTargets['Agonizing Blast'] === k ? `, each +${d.cm}` : ''}${c.invTargets['Eldritch Spear'] === k ? `, range ${120 + 30 * c.level} ft` : ''}${c.invTargets['Repelling Blast'] === k ? ', push 10 ft per hit' : ''}`);
     const mods = modifiersOf(c, k);
@@ -729,7 +1048,7 @@ function spellDrawer(k, c){
     if (sp.l > 0) {
       if (entry.src === 'arcanum') btns.push(`<button class="btn pri" data-cast="arc${entry.arc}">Cast (Arcanum)</button>`);
       else if (c.cls === 'Warlock' && entry.src !== 'mi') btns.push(`<button class="btn pri" data-cast="pact">Cast with Pact slot</button>`);
-      else if (c.cls === 'Sorcerer') slotsOf(c).filter(s => s.lv >= sp.l).forEach(s => btns.push(`<button class="btn ${s.lv === sp.l ? 'pri' : ''}" data-cast="s${s.lv}">${ord(s.lv)} slot (${s.max - used(c,'s'+s.lv)} left)</button>`));
+      else if (c.cls === 'Sorcerer') slotsOf(c).filter(s => s.lv >= sp.l).forEach(s => btns.push(`<button class="btn ${s.lv === sp.l ? 'pri' : ''}" data-cast="s${s.lv}" ${s.left ? '' : 'disabled'}>${ord(s.lv)} slot (${s.left} left)</button>`));
       if (entry.src === 'mi') btns.push(`<button class="btn pri" data-cast="mi">Cast free (Magic Initiate)</button>`);
       if (entry.src === 'mark') { const id = {alarm:'m_alarm','mage armor':'m_armor','arcane lock':'m_lock'}[k]; if (id) btns.push(`<button class="btn" data-cast="${id}">Cast free (Mark)</button>`); }
       if (sp.rit) btns.push(`<button class="btn" data-cast="ritual">Cast as Ritual (+10 min)</button>`);
@@ -744,9 +1063,14 @@ function spellDrawer(k, c){
       if (cb && c) {
         const id = cb.dataset.cast;
         if (id.startsWith('sp:')) { const n = +id.slice(3); if (row(c).sp - used(c,'sp') < n) { toast('Not enough Sorcery Points'); return; } c.used.sp = used(c,'sp') + n; }
+        else if (/^s\d$/.test(id) && c.cls === 'Sorcerer') { const lv = +id.slice(1), s = slotsOf(c).find(x => x.lv === lv); if (!s || !s.left) { toast('No slots of that level left.'); return; } if (s.max - used(c,id) > 0) c.used[id] = used(c,id) + 1; else c.used['x'+lv] = s.x - 1; }
         else if (id !== 'ritual' && id !== 'cantrip') { const max = slotMax(c, id); if (used(c,id) >= max) { toast('No uses left. Rest to recover them.'); return; } c.used[id] = used(c,id) + 1; }
         let msg = `Cast ${sp.n}`;
-        if (sp.conc) { if (c.conc && c.conc !== k && R.spells[c.conc]) msg += `. ${R.spells[c.conc].n} ends`; c.conc = k; msg += '. Concentrating'; }
+        if (sp.conc) { if (c.conc && c.conc !== k && R.spells[c.conc]) msg += `. ${R.spells[c.conc].n} ends`; c.conc = k; const u = untilFor(sp.d); if (u != null) c.concUntil = u; else delete c.concUntil; msg += '. Concentrating'; }
+        else if (sp.l > 0 && !/^Instantaneous/i.test(sp.d)) {
+          if (k === 'mage armor' && c.ac2 && /mage armor/i.test(c.ac2Label || '')) { c.used.armorOn = 1; msg += `. AC ${c.ac2}`; }
+          else addEffect(c, {n: sp.n, k, dur: sp.d});
+        }
         commit(c); closeDrawer(); toast(msg); return;
       }
       const tp = e.target.closest('[data-toggleprep]');
@@ -816,6 +1140,7 @@ function pushRoll(r, keepOpen){ const c = ctxChar(); const x = Object.assign({wh
 function rollD20(label, m, mode, c){
   const a = d20(), b = d20(), pen = c ? D(c).ex : 0;
   const pick = mode === 'adv' ? Math.max(a,b) : mode === 'dis' ? Math.min(a,b) : a;
+  if (label === 'Initiative' && c) setPcInit(c.id, pick + m - pen);
   pushRoll({label, total: pick + m - pen, nat: pick, detail: `${mode === 'adv' ? `Advantage (${a}, ${b})` : mode === 'dis' ? `Disadvantage (${a}, ${b})` : `d20 ${a}`} ${sgn(m)}${pen ? ` −${pen} exhaustion` : ''}`});
 }
 function rollMenu(label, m, c, presetAdv){
@@ -832,7 +1157,7 @@ function attackDrawer(c, i){
   const mods = a.sp ? modifiersOf(c, a.sp) : [];
   const body = `<div class="meta"><div><span>${a.kind === 'save' ? 'Save' : 'To hit'}</span>${esc(x.hit || 'Automatic')}</div><div><span>Damage</span>${esc(x.dmg)} ${esc(a.type)}</div><div style="grid-column:1/-1"><span>Range</span>${esc(x.rng || '—')}</div></div>
     ${a.note ? `<p>${esc(a.note)}</p>` : ''}${read || mastery || mods.length ? `<div class="callout">${read}${mastery}${mods.length ? `<br>Modified by: ${mods.join(', ')}` : ''}</div>` : ''}`;
-  const foot = (x.hitMod !== null ? `<button class="btn" data-ar="dis">Attack (Dis)</button><button class="btn pri" data-ar="norm">Attack</button><button class="btn" data-ar="adv">Attack (Adv)</button>` : '') +
+  const foot = (x.hitMod !== null ? `<button class="btn" data-ar="dis">Attack (Dis)</button><button class="btn ${x.adv ? '' : 'pri'}" data-ar="norm">Attack</button><button class="btn ${x.adv ? 'pri' : ''}" data-ar="adv">Attack (Adv)</button>` : '') +
     `<button class="btn" data-ar="dmg">Damage</button>${x.hitMod !== null ? '<button class="btn" data-ar="crit">Critical damage</button>' : ''}`;
   openDrawer(esc(a.n), body, foot, el => el.addEventListener('click', e => {
     const b = e.target.closest('[data-ar]'); if (!b) return;
@@ -1162,6 +1487,7 @@ document.addEventListener('click', e => {
     e.preventDefault(); e.stopPropagation();
     const [ty, ...rest] = a.dataset.l.split('|');
     if (document.getElementById('scrim') && curReopen) navStack.push(curReopen);
+    const hold = a.closest('[data-ctx]'); if (hold && !a.closest('#scrim')) ctxOverride = hold.dataset.ctx;
     openEntity(ty, rest.join('|'));
     return;
   }
@@ -1199,6 +1525,23 @@ document.addEventListener('change', e => {
 document.addEventListener('click', e => {
   const t = e.target;
   if (t.closest('#scrim')) return;
+  if (ui.cur === 'init') {
+    if (t.closest('[data-inext]')) { if (combat.round < 1) { sortCombat(); } nextTurn(1); return; }
+    if (t.closest('[data-iprev]')) { nextTurn(-1); return; }
+    if (t.closest('[data-isort]')) { sortCombat(); saveCombat(); render(); toast('Sorted'); return; }
+    if (t.closest('[data-iparty]')) { ensureParty(); saveCombat(); render(); return; }
+    if (t.closest('[data-irollall]')) { const msgs = combat.list.filter(e => !e.standby && e.init == null).map(rollInit); saveCombat(); render(); toast(msgs.join(', ')); return; }
+    const nw = t.closest('[data-inew]'); if (nw) { if (!nw.dataset.sure) { nw.dataset.sure = '1'; nw.textContent = 'Tap again: clear enemies'; setTimeout(() => { if (nw.isConnected) { delete nw.dataset.sure; nw.textContent = 'New combat'; } }, 4000); return; } newCombat(); return; }
+    const ir = t.closest('[data-iroll]'); if (ir) { const e = combat.list.find(x => x.id === ir.dataset.iroll); if (e) { const msg = rollInit(e); saveCombat(); render(); toast(msg); } return; }
+    const io = t.closest('[data-iopen]'); if (io) { initDrawer(io.dataset.iopen); return; }
+    const ih = t.closest('[data-ihp]'); if (ih) { initHpDrawer(ih.dataset.ihp); return; }
+    const qa = t.closest('[data-qadd]'); if (qa) { addCreatures(+qa.dataset.qadd, null); return; }
+    if (t.closest('[data-iaddv]')) { const v = parseInt(ui.ia.v, 10); if (isNaN(v)) { toast('Type the initiative first'); return; } addCreatures(0, v); return; }
+    if (t.closest('[data-ilair]')) { combat.list.push({id: uid(), n: uniqueName('Lair action'), kind: 'enemy', mod: -99, init: 20, conds: [], note: 'Loses ties'}); saveCombat(); render(); return; }
+    const jn = t.closest('[data-ijoin]'); if (jn) { const e = combat.list.find(x => x.id === jn.dataset.ijoin); if (e) { e.standby = false; const msg = rollInit(e); saveCombat(); render(); toast(msg); } return; }
+    const rm = t.closest('[data-irm]'); if (rm) { if (!rm.dataset.sure) { rm.dataset.sure = '1'; rm.textContent = 'Sure?'; return; } combat.list = combat.list.filter(x => x.id !== rm.dataset.irm); saveCombat(); render(); return; }
+    return;
+  }
   if (ui.cur === 'party') {
     const qd = t.closest('[data-qdone]'); if (qd) { const q = party.quests.find(x => x.id === qd.dataset.qdone); if (q) { q.done = qd.checked; saveItem('quests', q); render(); } return; }
     const ed = t.closest('[data-edit]'); if (ed) { const [coll, id] = ed.dataset.edit.split('|'); editItem(coll, id); return; }
@@ -1229,6 +1572,8 @@ document.addEventListener('click', e => {
   const cnt = t.closest('[data-cnt]'); if (cnt) { const id = cnt.dataset.cnt, max = id === 'sp' ? row(c).sp : slotMax(c, id); c.used[id] = Math.max(0, Math.min(max, used(c,id) + (+cnt.dataset.d))); commit(c); return; }
   const ex = t.closest('[data-exh]'); if (ex) { c.exhaustion = Math.max(0, Math.min(6, c.exhaustion + (+ex.dataset.exh))); commit(c); return; }
   const uc = t.closest('[data-uncond]'); if (uc) { c.conditions = c.conditions.filter(x => x !== uc.dataset.uncond); commit(c); return; }
+  const ue = t.closest('[data-uneff]'); if (ue) { endEffect(c, ue.dataset.uneff); commit(c); return; }
+  const xs = t.closest('[data-xslot]'); if (xs) { const k = 'x' + xs.dataset.xslot; c.used[k] = Math.max(0, used(c,k) - 1); commit(c); toast('Created slot spent'); return; }
   const atk = t.closest('[data-atk]'); if (atk) { attackDrawer(c, +atk.dataset.atk); return; }
   const sv = t.closest('[data-savetog]'); if (sv) { const a = sv.dataset.savetog; c.saves = c.saves.includes(a) ? c.saves.filter(x => x !== a) : c.saves.concat(a); commit(c); return; }
   const sk = t.closest('[data-skilltog]'); if (sk) { const k = sk.dataset.skilltog; c.skills[k] = ((c.skills[k] || 0) + 1) % 3; if (!c.skills[k]) delete c.skills[k]; commit(c); return; }
@@ -1236,9 +1581,12 @@ document.addEventListener('click', e => {
   const A = act.dataset.act;
   if (A === 'hp') hpDrawer(c);
   if (A === 'editattacks') attacksDrawer(c);
+  if (A === 'font') fontDrawer(c);
+  if (A === 'innate') toggleInnate(c);
+  if (A === 'addeff') effectDrawer(c);
   if (A === 'armor') { c.used.armorOn = used(c,'armorOn') ? 0 : 1; commit(c); }
   if (A === 'insp') { c.used.insp = used(c,'insp') ? 0 : 1; commit(c); }
-  if (A === 'dropconc') { const n = c.conc && R.spells[c.conc] ? R.spells[c.conc].n : ''; c.conc = null; commit(c); toast(`${n} ends`); }
+  if (A === 'dropconc') { const n = c.conc && R.spells[c.conc] ? R.spells[c.conc].n : ''; c.conc = null; delete c.concUntil; commit(c); toast(`${n} ends`); }
   if (A === 'addcond') picker({title:'Conditions', items: CONDS.filter(k => R.gloss['cond|'+k]).map(k => ({id:k, label:R.gloss['cond|'+k].n, link:'cond|' + k})), need:CONDS.length, allowFewer:true, _sel:c.conditions, onDone:ks => { c.conditions = ks; commit(c); }});
   if (A === 'swapinv') picker({title:'Eldritch Invocations', intro:'Tick the invocations you have. When you gain a Warlock level you can replace one.', items:invItems(c, c.level, new Set(c.invocations)), need:row(c).inv, allowFewer:true, _sel:c.invocations, onDone:ks => { c.invocations = ks; normalise(c); commit(c); }});
   if (A === 'swapmeta') picker({title:'Metamagic', intro:'When you gain a Sorcerer level you can replace one option.', items:R.metamagic.map(m => ({id:m.n, label:m.n, link:'opt|' + m.n.toLowerCase()})), need:metaMax(c.level), allowFewer:true, _sel:c.metamagic, onDone:ks => { c.metamagic = ks; commit(c); }});
@@ -1260,13 +1608,13 @@ function restDrawer(c, kind){
   const res = resources(c);
   const back = res.filter(r => r.rest === 'short' || kind === 'long').map(r => r.n);
   const body = kind === 'long'
-    ? `<p>Regain all Hit Points and Hit Dice, reset death saves and temporary HP, end concentration, remove one level of Exhaustion, and recover:</p><p>${esc(back.join(', '))}${c.cls === 'Sorcerer' ? ', all spell slots' : ''}.</p>${c.species === 'Human' ? `<p>${lk('species','Resourceful','Resourceful')}: you gain Heroic Inspiration.</p>` : ''}<p class="note">${lk('rule','long rest','Long Rest rules')}</p>`
+    ? `<p>Regain all Hit Points and Hit Dice, reset death saves and temporary HP, end concentration and active effects, remove one level of Exhaustion, and recover:</p><p>${esc(back.join(', '))}${c.cls === 'Sorcerer' ? ', all spell slots (any created with Font of Magic vanish)' : ''}.</p>${c.species === 'Human' ? `<p>${lk('species','Resourceful','Resourceful')}: you gain Heroic Inspiration.</p>` : ''}<p class="note">${lk('rule','long rest','Long Rest rules')}</p>`
     : `<p>Recover: ${esc(back.join(', ') || 'nothing automatic')}.</p><p class="note">Spend Hit Dice from the Hit Points panel.${c.cls === 'Sorcerer' && c.level >= 5 ? ' Sorcerous Restoration: regain up to ' + Math.floor(c.level/2) + ' Sorcery Points once per Long Rest.' : ''} ${lk('rule','short rest','Short Rest rules')}</p>`;
   const foot = `<button class="btn pri" data-ok>Take ${kind} rest</button>${kind === 'short' && c.cls === 'Sorcerer' && c.level >= 5 && !used(c,'restore') ? `<button class="btn" data-restore>Rest + Sorcerous Restoration</button>` : ''}`;
   openDrawer(kind === 'long' ? 'Long rest' : 'Short rest', body, foot, el => el.addEventListener('click', e => {
     const restore = e.target.closest('[data-restore]');
     if (!e.target.closest('[data-ok]') && !restore) return;
-    if (kind === 'long') { c.used = {armorOn: used(c,'armorOn')}; c.hp = c.hpMax; c.temp = 0; c.conc = null; c.exhaustion = Math.max(0, c.exhaustion - 1); if (c.species === 'Human') c.used.insp = 1; }
+    if (kind === 'long') { c.used = {armorOn: used(c,'armorOn')}; c.effects = []; delete c.concUntil; c.hp = c.hpMax; c.temp = 0; c.conc = null; c.exhaustion = Math.max(0, c.exhaustion - 1); if (c.species === 'Human') c.used.insp = 1; }
     else { res.filter(r => r.rest === 'short').forEach(r => delete c.used[r.id]); if (restore) { c.used.sp = Math.max(0, used(c,'sp') - Math.floor(c.level/2)); c.used.restore = 1; } }
     commit(c); closeDrawer(); toast(kind === 'long' ? 'Long rest taken' : 'Short rest taken');
   }), () => restDrawer(c, kind));
@@ -1284,6 +1632,8 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeDrawer();
+  if (e.key === 'Enter' && e.target.matches('[data-iniv]')) { e.preventDefault(); e.target.blur(); }
+  if (e.key === 'Enter' && e.target.id === 'ia-v') { e.preventDefault(); const b = document.querySelector('[data-iaddv]'); if (b) b.click(); }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('[role="button"]')) { e.preventDefault(); e.target.click(); }
 });
 let inputTimer;
@@ -1291,6 +1641,7 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.closest('#scrim')) return;
   if (t.id === 'spq') { ui.q[ui.cur] = t.value; const c = ctxChar(); const box = document.getElementById('splist'); if (c && box) box.innerHTML = spellRows(c); lsSet(LS_UI, ui); return; }
+  if (t.dataset.ia) { ui.ia[t.dataset.ia] = t.type === 'checkbox' ? t.checked : t.value; lsSet(LS_UI, ui); return; }
   if (t.dataset.pfield) { party[t.dataset.pfield] = t.value; saveParty(); return; }
   if (t.dataset.pcoin) { party.coins[t.dataset.pcoin] = parseInt(t.value,10) || 0; saveParty(); return; }
   if (t.dataset.mfield) { chars.mule[t.dataset.mfield] = t.value; lsSet(LS_KEY, chars); clearTimeout(inputTimer); inputTimer = setTimeout(() => save('mule'), 600); return; }
@@ -1305,6 +1656,8 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   if (e.target.closest('#scrim')) return;
   if (e.target.dataset.check) { const c = ctxChar(); if (c) { c[e.target.dataset.check] = e.target.checked; commit(c); } return; }
+  if (e.target.dataset.ia) { ui.ia[e.target.dataset.ia] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; lsSet(LS_UI, ui); return; }
+  if (e.target.dataset.iniv) { const en = combat.list.find(x => x.id === e.target.dataset.iniv), v = parseInt(e.target.value, 10); if (en && !isNaN(v)) { en.init = v; saveCombat(); render(); } return; }
   if (e.target.dataset.abin || e.target.dataset.field) pendingRender = true;
 });
 // Re-render after editing only once the viewer has left the form, so moving between fields never loses a tap.
@@ -1315,7 +1668,7 @@ document.addEventListener('focusout', e => {
   if (next && /INPUT|TEXTAREA|SELECT/.test(next.tagName)) return;
   setTimeout(() => { const a = document.activeElement; if (pendingRender && !(a && /INPUT|TEXTAREA|SELECT/.test(a.tagName))) { pendingRender = false; render(); } }, 0);
 });
-window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (PCS.includes(h) || h === 'party') { ui.cur = h; render(); } else if (h === 'mule') { ui.cur = 'party'; render(); } });
+window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (PAGES.includes(h)) { ui.cur = h; render(); } else if (h === 'mule') { ui.cur = 'party'; render(); } });
 
 function start(){ render(); connect(); if (BE && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {}); }
 if (BE && BE.boot) { window.startApp = start; BE.boot(); } else start();
