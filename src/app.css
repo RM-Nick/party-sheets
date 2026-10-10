@@ -249,3 +249,89 @@ a.lk:hover{ text-decoration-style:solid }
 
 .installbar{ display:flex; align-items:center; gap:8px; background:var(--acc-soft); border:1px solid var(--acc); border-radius:var(--r); padding:8px 8px 8px 12px; margin-top:10px; font-size:14px }
 .installbar .main{ flex:1; min-width:0 }
+
+/* Innate Sorcery, Font of Magic */
+.vt.boost{ border-color:var(--acc); background:var(--acc-soft) }
+.vt.boost .v{ color:var(--acc) }
+.innatebar{ display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:8px 12px; margin:-2px 0 10px; font-size:14px }
+.innatebar .main{ flex:1; min-width:0 }
+.innatebar.on{ border-color:var(--acc); background:var(--acc-soft) }
+.pip.x{ background:var(--acc-soft); border-style:dashed }
+.fontsp{ display:flex; align-items:baseline; gap:10px; margin-bottom:6px }
+.fontsp .big{ font-size:40px; font-weight:700; color:var(--acc); line-height:1 }
+.drawer h4{ margin:14px 0 6px; font-size:15px }
+.drawer h4 .m{ font-weight:400; font-size:13px; color:var(--muted) }
+.fontgrid{ display:grid; gap:6px }
+.fontgrid .btn{ display:flex; justify-content:space-between; align-items:center; text-align:left }
+.fontgrid .btn .m{ font-size:13px; opacity:.85 }
+.stat.act{ border-color:var(--good) }
+.stat .m{ font-size:12px; color:var(--muted) }
+.chips{ display:flex; flex-wrap:wrap; gap:6px }
+.chips .chip{ font-size:13px; padding:5px 10px; background:var(--surface); cursor:pointer }
+.chip.on{ background:var(--acc); color:var(--acc-ink); border-color:var(--acc) }
+.chip.ally{ border-color:var(--good); color:var(--good) }
+
+/* whose turn */
+.turnbar{ display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line); border-left:5px solid var(--muted); border-radius:var(--r); padding:8px 12px; margin:6px 0 8px; cursor:pointer; font-size:15px }
+.turnbar .main{ flex:1; min-width:0 }
+.turnbar .rnd{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); white-space:nowrap }
+.turnbar .m{ font-size:13px; color:var(--muted); white-space:nowrap }
+.turnbar.mine{ border-color:var(--acc); border-left-color:var(--acc); background:var(--acc-soft) }
+.turnbar.next{ border-left-color:var(--warn) }
+.pc .live{ display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); vertical-align:1px; margin-left:3px }
+
+/* DM overview cards */
+[data-mc="amber"]{ --pcc:#8f6411 } [data-mc="mausfanger"]{ --pcc:#b04e17 } [data-mc="mamuk"]{ --pcc:#6a43b5 }
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) [data-mc="amber"]{ --pcc:#e0a83a } :root:not([data-theme="light"]) [data-mc="mausfanger"]{ --pcc:#f08a4b } :root:not([data-theme="light"]) [data-mc="mamuk"]{ --pcc:#ac8ff0 } }
+:root[data-theme="dark"] [data-mc="amber"]{ --pcc:#e0a83a } :root[data-theme="dark"] [data-mc="mausfanger"]{ --pcc:#f08a4b } :root[data-theme="dark"] [data-mc="mamuk"]{ --pcc:#ac8ff0 }
+.member{ gap:8px; border-top:4px solid var(--pcc, var(--line)) }
+.member .mhead{ display:flex; align-items:center; gap:10px; background:none; border:0; padding:0; text-align:left; width:100% }
+.member .mhead .main{ flex:1; min-width:0; display:flex; flex-direction:column }
+.member .mhead .m{ font-size:13px; color:var(--muted) }
+.member .mn{ color:var(--pcc) !important }
+.member .insp{ color:var(--warn); font-size:20px }
+.member .avatar{ border-color:var(--pcc) }
+.mhp{ display:flex; flex-direction:column; gap:4px; font-size:15px }
+.mhp .m{ font-size:13px; color:var(--muted) }
+.mgrid{ display:grid; grid-template-columns:repeat(4,1fr); gap:6px }
+.mgrid > div{ background:var(--surface2); border-radius:var(--r-sm); padding:5px 4px; text-align:center; display:flex; flex-direction:column; min-width:0 }
+.mgrid span{ font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); line-height:1.2 }
+.mgrid b{ font-size:19px; line-height:1.2 }
+.mgrid b.sm{ font-size:14px; padding-top:3px }
+.mgrid b small{ font-size:11px; font-weight:400; color:var(--muted); margin-left:2px }
+.mgrid .boost{ background:var(--acc-soft); outline:1px solid var(--acc) }
+.ml{ display:grid; grid-template-columns:104px 1fr; gap:8px; font-size:14px; border-top:1px solid var(--line); padding-top:6px }
+.ml .mk{ color:var(--muted); font-size:11px; letter-spacing:.02em; overflow-wrap:anywhere; text-transform:uppercase; padding-top:2px }
+.ml .mv .m{ color:var(--muted); font-size:13px }
+@media (min-width:760px){ .wrap{ max-width:720px } }
+
+/* initiative tracker */
+.ictl{ display:grid; grid-template-columns:1fr 2fr; gap:8px; margin:4px 0 8px }
+.btn.big{ min-height:52px; font-size:18px }
+.ilist{ display:flex; flex-direction:column; gap:6px; margin-bottom:6px }
+.irow{ display:grid; grid-template-columns:64px 1fr auto; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--line); border-left:6px solid var(--muted); border-radius:var(--r); padding:6px 10px 6px 8px; min-height:58px }
+.irow[data-k="enemy"]{ border-left-color:var(--bad); background:color-mix(in srgb, var(--bad) 6%, var(--surface)) }
+.irow[data-k="ally"]{ border-left-color:var(--good); background:color-mix(in srgb, var(--good) 9%, var(--surface)) }
+.irow[data-k="ally"] .t{ color:var(--good) }
+.irow[data-k="pc"] .t{ color:var(--pcc) }
+.irow[data-cur="true"]{ outline:2px solid var(--ink); outline-offset:1px }
+.irow[data-down="true"]{ opacity:.5; background:var(--surface2) }
+.irow[data-down="true"] .t{ text-decoration:line-through }
+.irow .main{ background:none; border:0; padding:4px 0; text-align:left; min-width:0; display:flex; flex-direction:column }
+.irow .t{ font-weight:700; font-size:16px }
+.irow .m{ font-size:13px; color:var(--muted); overflow-wrap:anywhere }
+.irow .now{ color:var(--ink) }
+.ival{ font-size:26px; font-weight:700; background:var(--surface2); border:1px solid var(--line); border-radius:var(--r-sm); height:46px; width:100% }
+.iset{ display:flex; flex-direction:column; gap:3px; align-items:stretch }
+.ini{ width:100%; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface2); text-align:center; font-size:18px; padding:3px 2px }
+.iset .xs{ height:22px; font-size:12px }
+.ihp{ background:var(--surface2); border:1px solid var(--line); border-radius:var(--r-sm); padding:4px 8px; min-height:40px; min-width:56px }
+.ihp b{ font-size:17px } .ihp small{ color:var(--muted) }
+.iadd{ padding:10px 12px }
+.allytick .main{ font-weight:600; color:var(--good) }
+.allytick .main .m{ font-weight:400; color:var(--muted); font-size:13px }
+.qgrid{ display:grid; grid-template-columns:repeat(7,1fr); gap:6px }
+.qgrid .btn{ padding:6px 0; min-height:42px; font-weight:600 }
+.standby{ margin-top:14px }
+.standby summary{ cursor:pointer; color:var(--muted); padding:8px 2px; font-size:15px }
+.standby .row{ opacity:.75 }
