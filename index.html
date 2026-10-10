@@ -504,6 +504,7 @@ function normalise(c){
   (c.invocations || []).forEach(n => { if (TARGET_INV.includes(n.toLowerCase()) && !c.invTargets[n]) c.invTargets[n] = 'eldritch blast'; });
   c.invocations = c.invocations || []; c.metamagic = c.metamagic || []; c.expertise = c.expertise || []; c.arcanum = c.arcanum || {};
   if (c.conc === undefined) c.conc = null;
+  if (c.ac2 && !c.ac2Label) c.ac2Label = 'Mage Armor';
   (c.attacks || []).forEach(a => {
     if (!a.ref && a.n === 'Sneak Attack') a.ref = 'cf|Sneak Attack';
     if (!a.ref && a.n === 'Dagger') a.ref = 'weapon|Dagger';
@@ -605,7 +606,7 @@ function slotMax(c, id){
 const BE = window.BACKEND || null;
 const timers = {};
 const online = () => BE ? BE.online : (DB && canWrite);
-function dbSet(path, data){ return BE ? BE.set(path, data) : DB.doc(path).set(data); }
+function dbSet(path, data){ return BE ? BE.set(path, Object.assign({}, data, {by: BE.client})) : DB.doc(path).set(data); }
 function dbDel(path){ return BE ? BE.del(path) : DB.doc(path).delete(); }
 function save(id){
   lsSet(LS_KEY, chars);
@@ -643,7 +644,7 @@ async function connectBackend(){
   setSync('busy');
   try {
     await BE.start({
-      onDoc: (path, v) => { if (applyDoc(path, v)) softRender(); },
+      onDoc: (path, v) => { if (v && v.by === BE.client) return; if (applyDoc(path, v)) softRender(); },
       onDel: path => { const [coll, id] = path.split('/'); if (party[coll]) { party[coll] = party[coll].filter(x => x.id !== id); lsSet(LS_PARTY, party); softRender(); } },
       loaded: seen => {
         ORDER.forEach(id => { if (!seen.has('chars/' + id)) save(id); });
@@ -693,8 +694,8 @@ function plainToHtml(t){ return String(t).trim().split(/\n{2,}/).map(p => '<p>' 
 function provenance(t, url, key){
   let h = '';
   if (t.mine) h = `<p class="own">Your own text. <button class="btn sm ghost" data-act="cleartext" data-key="${esc(key)}">Remove</button></p>`;
-  else if (t.own) h = `<p class="own">Summary in my own words (not in the free SRD).${url ? ` <a href="${url}" target="_blank" rel="noopener">Full text on 5e.tools</a>` : ''}</p>`;
-  else if (url) h = `<p class="note">SRD 5.2, CC-BY-4.0. <a href="${url}" target="_blank" rel="noopener">Open on 5e.tools</a></p>`;
+  else if (t.own) h = `<p class="own">Summary.${url ? ` <a href="${url}" target="_blank" rel="noopener">Full text on 5e.tools</a>` : ''}</p>`;
+  else if (url) h = `<p class="note"><a href="${url}" target="_blank" rel="noopener">Open on 5e.tools</a></p>`;
   if (!t.mine && key) h += `<p><button class="btn sm ghost" data-act="edittext" data-key="${esc(key)}">Use your own text</button></p>`;
   return h;
 }
@@ -747,9 +748,15 @@ const ICON = {
  skills:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 8v8M8.5 10l7 4M15.5 10l-7 4"/></svg>',
  notes:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h7M9 8h3"/></svg>'
 };
-const TABS = [['combat','Combat'],['spells','Spells'],['features','Features'],['skills','Abilities'],['notes','Gear']];
+const TABS = [['combat','Combat'],['spells','Spells'],['features','Features'],['skills','Abilities'],['notes','Details']];
 
 function render(){
+  // keep focus and cursor in whatever field the viewer is in, so a re-render never steals their typing
+  const ae = document.activeElement, keep = ae && ae.id && !ae.closest('#scrim') && /INPUT|TEXTAREA|SELECT/.test(ae.tagName) ? {id: ae.id, s: ae.selectionStart, e: ae.selectionEnd} : null;
+  renderInner();
+  if (keep) { const n = document.getElementById(keep.id); if (n) { n.focus({preventScroll:true}); try { if (keep.s != null) n.setSelectionRange(keep.s, keep.e); } catch(_){} } }
+}
+function renderInner(){
   const isParty = ui.cur === 'party';
   const c = isParty ? null : chars[ui.cur];
   document.body.dataset.c = ui.cur;
@@ -762,7 +769,7 @@ function render(){
     main = renderHero(c) + renderVitals(c) + ({combat:renderCombat, spells:renderSpells, features:renderFeatures, skills:renderSkills, notes:renderNotes}[tab])(c);
   }
   app.innerHTML = `${installBanner()}<nav class="party" aria-label="Party">${bar}</nav><main>${main}</main>
-   <p class="foot">Rules text: System Reference Document 5.2 by Wizards of the Coast LLC, licensed under CC-BY-4.0 (creativecommons.org/licenses/by/4.0). Entries marked as summaries are written in my own words, with links to the full text on 5e.tools.</p>`;
+   <div style="height:24px"></div>`;
   setSync(syncState);
   const tb = document.getElementById('tabs');
   if (isParty) tb.hidden = true;
@@ -804,7 +811,7 @@ function renderVitals(c){
   const ac = c.ac2 && used(c,'armorOn') ? c.ac2 : c.ac;
   return `<section class="vitals">
     <div class="vt hpbox" data-act="hp" role="button" tabindex="0"><span class="k">Hit points</span><span class="v">${c.hp}<small> / ${c.hpMax}${c.temp ? ` +${c.temp}` : ''}</small></span><span class="bar ${pct <= 25 ? 'crit' : pct <= 50 ? 'low' : ''}"><i style="width:${pct}%"></i></span></div>
-    <div class="vt" ${c.ac2 ? 'data-act="armor" role="button" tabindex="0"' : ''}><div class="k">AC</div><div class="v">${ac}</div><div class="s">${c.ac2 ? (used(c,'armorOn') ? 'Mage Armor' : 'tap: +Mage') : ''}</div></div>
+    <div class="vt" ${c.ac2 ? 'data-act="armor" role="button" tabindex="0"' : ''}><div class="k">AC</div><div class="v">${ac}</div><div class="s">${c.ac2 ? (used(c,'armorOn') ? esc(c.ac2Label || 'Alternative') : 'tap: ' + esc((c.ac2Label || 'alt').split(' ')[0])) : ''}</div></div>
     <div class="vt" data-roll="init" role="button" tabindex="0"><div class="k">Init</div><div class="v">${sgn(d.init)}</div><div class="s">${c.initAdv ? 'Advantage' : 'tap to roll'}</div></div>
     <div class="vt"><div class="k">Prof</div><div class="v">${sgn(d.pb)}</div><div class="s">bonus</div></div>
    </section>
@@ -897,7 +904,7 @@ function rollStrip(){
   return `<div class="rollstrip" data-act="rolllog" role="button" tabindex="0"><span class="rv ${r.nat === 20 ? 'n20' : r.nat === 1 ? 'n1' : ''}">${esc(r.total)}</span><span class="main"><b>${esc(r.label)}</b><br><span class="m">${esc(r.detail)}</span></span><span class="m">History</span></div>`;
 }
 function renderCombat(c){
-  return `${rollStrip()}<h2 class="sec">Attacks <span class="aside">tap to roll</span></h2><div class="card list">${atkRows(c)}</div>
+  return `${rollStrip()}<h2 class="sec">Attacks <span class="aside">tap to roll <button class="btn sm" data-act="editattacks">Edit</button></span></h2><div class="card list">${atkRows(c)}</div>
    <h2 class="sec">Conditions <span class="aside"><button class="btn sm" data-act="addcond">Add or remove</button></span></h2>
    <div class="card list">${c.conditions.length ? `<div class="row"><div class="main">${c.conditions.map(k => R.gloss['cond|'+k] ? lk('cond', k, R.gloss['cond|'+k].n) : '').join(', ')}</div></div>` : '<div class="row"><div class="main note">No conditions.</div></div>'}
    <div class="res"><div class="main"><div class="t">${lk('cond','exhaustion','Exhaustion')}</div><div class="m">Each level: −2 to d20 tests and −5 ft Speed. Level 6 is death.</div></div><div class="counter"><button data-exh="-1" aria-label="Lower exhaustion">−</button><b>${c.exhaustion}</b><button data-exh="1" aria-label="Raise exhaustion">+</button></div></div></div>
@@ -997,16 +1004,23 @@ function renderSkills(c){
   return `${rollStrip()}<h2 class="sec">Abilities <span class="aside"><button class="btn sm ${edit ? 'pri' : ''}" data-act="toggleedit">${edit ? 'Done' : 'Edit'}</button></span></h2>
     <div class="abil">${ab}</div>
     <p class="note">${edit ? 'Tap a save to toggle proficiency. Tap a skill to cycle none, proficient, expertise.' : 'Tap a modifier, save or skill to roll it.'}</p>
-    ${edit ? `<div class="grid2" style="margin-top:10px">${[['hpMax','HP max'],['ac','AC'],['speed','Speed'],['name','Name']].map(([k,l]) => `<div class="field"><label for="f-${k}">${l}</label><input id="f-${k}" data-field="${k}" value="${esc(c[k])}"></div>`).join('')}</div>` : ''}
     <h2 class="sec">Skills <span class="aside">${lk('rule','passive perception','Passive Perception')} ${d.passive}</span></h2><div class="card list">${sk}</div>`;
 }
 function renderNotes(c){
   const t = (k,l,rows) => `<div class="field"><label for="n-${k}">${l}</label><textarea id="n-${k}" data-field="${k}" ${rows ? `style="min-height:${rows}px"` : ''}>${esc(c[k] || '')}</textarea></div>`;
-  return `<h2 class="sec">Equipment</h2>${t('equipment','Carried')}
+  const inp = (k, l, type, ph) => `<div class="field"><label for="d-${k}">${l}</label><input id="d-${k}" ${type === 'number' ? 'type="number" inputmode="numeric"' : ''} data-field="${k}" value="${esc(c[k] ?? '')}" ${ph ? `placeholder="${esc(ph)}"` : ''}></div>`;
+  return `<h2 class="sec">Character details <span class="aside">changes save as you type</span></h2>
+   <div class="grid2">${inp('name','Name')}${inp('aka','Other names or aliases','', 'Disguises, titles…')}${inp('age','Age')}${inp('alignment','Alignment')}${inp('species','Species')}${inp('bg','Background')}${inp('size','Size')}${inp('speed','Speed')}</div>
+   <h2 class="sec">Combat numbers</h2>
+   <div class="grid2">${inp('hpMax','HP maximum','number')}${inp('ac','Armour Class','number')}${inp('acNote','What gives that AC','', 'Studded leather, shield…')}${inp('ac2','Alternative AC (optional)','number')}${inp('ac2Label','Name of the alternative','', 'Mage Armor, Shield of Faith…')}${inp('initMisc','Extra Initiative bonus','number')}</div>
+   <label class="pick" style="border:0"><input type="checkbox" data-check="initAdv" ${c.initAdv ? 'checked' : ''}><div class="main">Advantage on Initiative</div></label>
+   <h2 class="sec">Attacks <span class="aside"><button class="btn sm" data-act="editattacks">Edit attacks</button></span></h2>
+   <h2 class="sec">Proficiencies</h2>
+   <div class="grid2">${inp('armour','Armour training')}${inp('weapons','Weapons')}${inp('tools','Tools')}${inp('languages','Languages')}</div>
+   <h2 class="sec">Equipment</h2>${t('equipment','Carried')}
    <div class="coins">${['cp','sp','ep','gp','pp'].map(k => `<div class="field"><label for="co-${k}">${k.toUpperCase()}</label><input id="co-${k}" type="number" inputmode="numeric" data-coin="${k}" value="${c.coins[k] || 0}"></div>`).join('')}</div>
    <h2 class="sec">Character</h2>${t('appearance','Appearance',60)}${t('backstory','Backstory and personality',60)}${t('notes','Personal notes',140)}
    <p class="note">Notes for the whole group go on the ${'<button class="btn sm" data-go="party">Party</button>'} page.</p>
-   ${c.flags && c.flags.length ? `<h2 class="sec">Transcription notes <span class="aside">from the 9 Oct scans</span></h2><div class="card list">${c.flags.map(x => `<div class="row"><div class="main">${esc(x)}</div></div>`).join('')}</div>` : ''}
    <h2 class="sec">Your own rules text</h2>
    <p class="note">Paste wording from your own books to replace any summary. One entry per block: the name, a colon, then the text, with a blank line between entries. Names can be a spell (for example "Hunger of Hadar") or a feature as it appears in this app (for example "Healing Light").</p>
    <div class="field"><label for="bulk">Bulk paste</label><textarea id="bulk" placeholder="Hunger of Hadar: You open a gateway…&#10;&#10;Healing Light: You gain the ability…"></textarea></div>
@@ -1136,7 +1150,7 @@ function openEntity(ty, key){
 function glossDrawer(ty, key){
   const g = R.gloss[ty + '|' + key]; if (!g) return;
   const label = {cond:'Condition', act:'Action', rule:'Rules glossary', sense:'Sense', skill:'Skill', mast:'Weapon Mastery property'}[ty];
-  openDrawer(esc(g.n), `<p class="note">${label}</p>${g.h}<p class="note">SRD 5.2, CC-BY-4.0. <a href="${g.u}" target="_blank" rel="noopener">Open on 5e.tools</a></p>`, '', null, () => glossDrawer(ty, key));
+  openDrawer(esc(g.n), `<p class="note">${label}</p>${g.h}<p class="note"><a href="${g.u}" target="_blank" rel="noopener">Open on 5e.tools</a></p>`, '', null, () => glossDrawer(ty, key));
 }
 
 function spellDrawer(k, c){
@@ -1277,6 +1291,46 @@ function attackDrawer(c, i){
       else { const r = rollExpr(x.expr, m === 'crit'); pushRoll({label:`${a.n} ${m === 'crit' ? 'critical ' : ''}damage`, total:r.total, detail:`${x.expr}${m === 'crit' ? ' (dice doubled)' : ''}: ${r.detail} ${a.type}`}); }
     } else rollD20(`${a.n} attack`, x.hitMod, m, c);
   }), () => attackDrawer(c, i));
+}
+
+// ---------- attack editor ----------
+function attacksDrawer(c){
+  const rows = (c.attacks || []).map((a,i) => { const x = atkCalc(c, a); return `<div class="row"><div class="main"><div class="t">${esc(a.n)}</div><div class="m">${esc(x.hit || 'Automatic')} · ${esc(x.dmg)} ${esc(a.type || '')}</div></div><button class="btn sm" data-editatk="${i}">Edit</button></div>`; }).join('');
+  openDrawer('Attacks: ' + esc(c.name), `<div class="card list">${rows || '<div class="row"><div class="main note">No attacks yet.</div></div>'}</div>`, '<button class="btn pri" data-newatk>Add attack</button>', el => el.addEventListener('click', e => {
+    const ed = e.target.closest('[data-editatk]'); if (ed) { attackForm(c, +ed.dataset.editatk); return; }
+    if (e.target.closest('[data-newatk]')) attackForm(c, -1);
+  }), () => attacksDrawer(c));
+}
+function attackForm(c, i){
+  const a = i >= 0 ? clone(c.attacks[i]) : {n:'', kind:'atk', ab:'str', die:'1d6', addMod:true, type:'', rng:'', note:''};
+  const sel = (id, opts, v) => `<select id="${id}">${opts.map(([val,l]) => `<option value="${val}" ${String(v ?? '') === val ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const spellOpts = [['','None']].concat(spellList(c).map(s => [s.k, R.spells[s.k].n]));
+  const body = `<div class="field"><label for="af-n">Name</label><input id="af-n" value="${esc(a.n)}"></div>
+    <div class="grid2"><div class="field"><label for="af-kind">How it lands</label>${sel('af-kind', [['atk','Attack roll'],['save','Saving throw'],['auto','Hits automatically']], a.kind)}</div>
+    <div class="field"><label for="af-ab">Ability</label>${sel('af-ab', [['spell','Spellcasting'],['str','Strength'],['dex','Dexterity'],['con','Constitution'],['int','Intelligence'],['wis','Wisdom'],['cha','Charisma'],['','None']], a.ab)}</div>
+    <div class="field"><label for="af-save">Save (if a save)</label>${sel('af-save', [['',''],['Str','Strength'],['Dex','Dexterity'],['Con','Constitution'],['Int','Intelligence'],['Wis','Wisdom'],['Cha','Charisma']], a.save)}</div>
+    <div class="field"><label for="af-magic">Magic bonus to hit</label><input id="af-magic" type="number" inputmode="numeric" value="${a.magic || 0}"></div>
+    <div class="field"><label for="af-die">Damage dice</label><input id="af-die" value="${esc(a.die === 'sneak' ? 'sneak' : a.die)}" placeholder="1d8"></div>
+    <div class="field"><label for="af-type">Damage type</label><input id="af-type" value="${esc(a.type || '')}" placeholder="Slashing"></div>
+    <div class="field"><label for="af-scale">Scaling</label>${sel('af-scale', [['','None'],['cantrip','Cantrip (more dice at 5, 11, 17)'],['beams','Beams (Eldritch Blast)']], a.scale)}</div>
+    <div class="field"><label for="af-rng">Range</label><input id="af-rng" value="${esc(a.rng || '')}" placeholder="5 ft"></div></div>
+    <label class="pick" style="border:0"><input type="checkbox" id="af-mod" ${a.addMod ? 'checked' : ''}><div class="main">Add the ability modifier to damage</div></label>
+    <div class="field"><label for="af-sp">Linked spell</label>${sel('af-sp', spellOpts, a.sp)}</div>
+    <div class="field"><label for="af-note">Notes</label><textarea id="af-note" style="min-height:70px">${esc(a.note || '')}</textarea></div>
+    <p class="note">Damage dice can include a flat bonus, for example 1d4+1. Use "sneak" for Sneak Attack dice.</p>`;
+  openDrawer(i >= 0 ? 'Edit attack' : 'New attack', body, `${i >= 0 ? '<button class="btn danger" data-delatk>Delete</button>' : ''}<button class="btn pri" data-saveatk>Save</button>`, el => el.addEventListener('click', e => {
+    const g = id => el.querySelector('#' + id);
+    if (e.target.closest('[data-saveatk]')) {
+      const die = g('af-die').value.trim() || '1d4';
+      if (die !== 'sneak' && !/^\d+d\d+([+-]\d+)?$/.test(die)) { toast('Damage dice should look like 1d8 or 2d6+1'); return; }
+      Object.assign(a, {n: g('af-n').value.trim() || 'Attack', kind: g('af-kind').value, ab: g('af-ab').value, save: g('af-save').value, magic: parseInt(g('af-magic').value,10) || 0, die, type: g('af-type').value.trim(), scale: g('af-scale').value, rng: g('af-rng').value.trim(), addMod: g('af-mod').checked, sp: g('af-sp').value, note: g('af-note').value});
+      ['save','scale','sp','rng'].forEach(k => { if (!a[k]) delete a[k]; }); if (!a.magic) delete a.magic;
+      c.attacks = c.attacks || []; if (i >= 0) c.attacks[i] = a; else c.attacks.push(a);
+      save(c.id); render(); navStack = []; attacksDrawer(c); toast('Attack saved'); return;
+    }
+    const d = e.target.closest('[data-delatk]');
+    if (d) { if (!d.dataset.sure) { d.dataset.sure = '1'; d.textContent = 'Tap again to delete'; return; } c.attacks.splice(i, 1); save(c.id); render(); navStack = []; attacksDrawer(c); toast('Attack deleted'); }
+  }));
 }
 
 // ---------- dice tray: for big batches of dice ----------
@@ -1630,6 +1684,7 @@ document.addEventListener('click', e => {
   const act = t.closest('[data-act]'); if (!act) return;
   const A = act.dataset.act;
   if (A === 'hp') hpDrawer(c);
+  if (A === 'editattacks') attacksDrawer(c);
   if (A === 'armor') { c.used.armorOn = used(c,'armorOn') ? 0 : 1; commit(c); }
   if (A === 'insp') { c.used.insp = used(c,'insp') ? 0 : 1; commit(c); }
   if (A === 'dropconc') { const n = c.conc && R.spells[c.conc] ? R.spells[c.conc].n : ''; c.conc = null; commit(c); toast(`${n} ends`); }
@@ -1689,14 +1744,26 @@ document.addEventListener('input', e => {
   if (t.dataset.pcoin) { party.coins[t.dataset.pcoin] = parseInt(t.value,10) || 0; saveParty(); return; }
   if (t.dataset.mfield) { chars.mule[t.dataset.mfield] = t.value; lsSet(LS_KEY, chars); clearTimeout(inputTimer); inputTimer = setTimeout(() => save('mule'), 600); return; }
   const c = ctxChar(); if (!c) return;
-  if (t.dataset.field) { const f = t.dataset.field; c[f] = ['hpMax','ac'].includes(f) ? (parseInt(t.value,10) || 0) : t.value; }
+  if (t.dataset.field) { const f = t.dataset.field; if (['hpMax','ac','initMisc'].includes(f)) c[f] = parseInt(t.value,10) || 0; else if (f === 'ac2') { const v = parseInt(t.value,10); if (v) c.ac2 = v; else delete c.ac2; } else c[f] = t.value; }
   else if (t.dataset.coin) c.coins[t.dataset.coin] = parseInt(t.value,10) || 0;
   else if (t.dataset.abin) { const v = parseInt(t.value,10); if (v >= 1 && v <= 30) c.ab[t.dataset.abin] = v; }
   else return;
   lsSet(LS_KEY, chars);
   clearTimeout(inputTimer); inputTimer = setTimeout(() => save(c.id), 600);
 });
-document.addEventListener('change', e => { if (e.target.closest('#scrim')) return; if (e.target.dataset.abin || ['hpMax','ac','name'].includes(e.target.dataset.field)) render(); });
+document.addEventListener('change', e => {
+  if (e.target.closest('#scrim')) return;
+  if (e.target.dataset.check) { const c = ctxChar(); if (c) { c[e.target.dataset.check] = e.target.checked; commit(c); } return; }
+  if (e.target.dataset.abin || e.target.dataset.field) pendingRender = true;
+});
+// Re-render after editing only once the viewer has left the form, so moving between fields never loses a tap.
+let pendingRender = false;
+document.addEventListener('focusout', e => {
+  if (!pendingRender || e.target.closest('#scrim')) return;
+  const next = e.relatedTarget;
+  if (next && /INPUT|TEXTAREA|SELECT/.test(next.tagName)) return;
+  setTimeout(() => { const a = document.activeElement; if (pendingRender && !(a && /INPUT|TEXTAREA|SELECT/.test(a.tagName))) { pendingRender = false; render(); } }, 0);
+});
 window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (PCS.includes(h) || h === 'party') { ui.cur = h; render(); } else if (h === 'mule') { ui.cur = 'party'; render(); } });
 
 function start(){ render(); connect(); if (BE && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {}); }
