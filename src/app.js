@@ -61,6 +61,7 @@ function normalise(c){
   c.invocations = c.invocations || []; c.metamagic = c.metamagic || []; c.expertise = c.expertise || []; c.arcanum = c.arcanum || {};
   if (c.conc === undefined) c.conc = null;
   if (!Array.isArray(c.effects)) c.effects = [];
+  if (!c.saveB || typeof c.saveB !== 'object') c.saveB = {};
   if (c.ac2 && !c.ac2Label) c.ac2Label = 'Mage Armor';
   (c.attacks || []).forEach(a => {
     if (!a.ref && a.n === 'Sneak Attack') a.ref = 'cf|Sneak Attack';
@@ -83,7 +84,9 @@ function D(c){
   const skills = {};
   SKILLS.forEach(([k,,a]) => { const p = c.skills[k] || 0; skills[k] = m[a] + (p ? pb * p : 0); });
   const innate = c.cls === 'Sorcerer' && !!(c.used && c.used.innateOn);
-  return { L, pb, m, cm, dc: 8 + pb + cm + (innate ? 1 : 0), baseDc: 8 + pb + cm, innate, atk: pb + cm, skills, ex: (c.exhaustion || 0) * 2,
+  const sv = {}, svx = {};
+  AB.forEach(a => { svx[a] = (c.saveMisc || 0) + ((c.saveB || {})[a] || 0); sv[a] = m[a] + ((c.saves || []).includes(a) ? pb : 0) + svx[a]; });
+  return { L, pb, m, cm, sv, svx, dc: 8 + pb + cm + (innate ? 1 : 0), baseDc: 8 + pb + cm, innate, atk: pb + cm, skills, ex: (c.exhaustion || 0) * 2,
     init: m.dex + (c.initMisc || 0), passive: 10 + skills.perception, pInv: 10 + skills.investigation, pIns: 10 + skills.insight, tier: tierOf(L) };
 }
 function maxSpellLevel(c, r){
@@ -667,10 +670,10 @@ function renderFeatures(c){
 function renderSkills(c){
   const d = D(c), edit = !!ui.edit;
   const ab = AB.map(a => {
-    const sv = d.m[a] + (c.saves.includes(a) ? d.pb : 0);
+    const sv = d.sv[a];
     return `<div class="ab"><div class="k">${a.toUpperCase()}</div><div class="mod" ${edit ? '' : `data-roll="check:${a}" role="button" tabindex="0"`}>${sgn(d.m[a])}</div>
      <div class="sc">${edit ? `<input type="number" inputmode="numeric" id="ab-${a}" data-abin="${a}" value="${c.ab[a]}" min="1" max="30">` : c.ab[a]}</div>
-     <div class="sv ${c.saves.includes(a) ? 'p' : ''}" ${edit ? `data-savetog="${a}"` : `data-roll="save:${a}"`} role="button" tabindex="0">Save ${sgn(sv)}</div></div>`;
+     <div class="sv ${c.saves.includes(a) ? 'p' : ''}" ${edit ? `data-savetog="${a}"` : `data-roll="save:${a}"`} role="button" tabindex="0">Save ${sgn(sv)}${d.svx[a] ? `<small class="svb">${sgn(d.svx[a])} bonus</small>` : ''}</div></div>`;
   }).join('');
   const sk = SKILLS.map(([k,n,a]) => {
     const p = c.skills[k] || 0;
@@ -689,6 +692,9 @@ function renderNotes(c){
    <h2 class="sec">Combat numbers</h2>
    <div class="grid2">${inp('hpMax','HP maximum','number')}${inp('ac','Armour Class','number')}${inp('acNote','What gives that AC','', 'Studded leather, shield…')}${inp('ac2','Alternative AC (optional)','number')}${inp('ac2Label','Name of the alternative','', 'Mage Armor, Shield of Faith…')}${inp('initMisc','Extra Initiative bonus','number')}</div>
    <label class="pick" style="border:0"><input type="checkbox" data-check="initAdv" ${c.initAdv ? 'checked' : ''}><div class="main">Advantage on Initiative</div></label>
+   <div class="grid2">${inp('saveMisc','Bonus to all saving throws','number')}${inp('saveNote','What gives that bonus','', 'Cloak of Protection, Ring of Protection…')}</div>
+   <div class="field"><label>Extra bonus to one saving throw</label><div class="coins six">${AB.map(a => `<div class="field"><label for="sb-${a}">${a.toUpperCase()}</label><input id="sb-${a}" type="number" inputmode="numeric" data-saveb="${a}" value="${(c.saveB || {})[a] || ''}" placeholder="0"></div>`).join('')}</div></div>
+   <p class="note">These add on top of ability and proficiency, on the sheet, the Party page and every save roll.</p>
    <h2 class="sec">Defences and senses</h2>
    ${(() => { const df = defences(c), auto = ['res','adv','senses','other'].flatMap(k => df[k].filter(x => x.src).map(x => `${esc(x.t)} (${x.src})`)); return auto.length ? `<div class="callout">From your features: ${auto.join('; ')}</div>` : ''; })()}
    <div class="grid2">${inp('resist','Damage resistances','', 'Fire, Poison…')}${inp('immune','Damage immunities','', 'Poison…')}${inp('condImmune','Condition immunities','', 'Charmed, Poisoned…')}${inp('senses','Senses','', 'Darkvision 60 ft')}</div>
@@ -774,7 +780,7 @@ function memberCard(c){
     <button class="mhead" data-go="${c.id}">${avatar(c, 'sm').replace('<button', '<span').replace('</button>', '</span>').replace(/data-portrait="[^"]*"/, '')}<span class="main"><span class="mn">${esc(c.name)}</span><span class="m">Level ${c.level} ${esc(c.sub)} ${esc(c.cls)} · ${esc(c.species)}</span></span>${used(c,'insp') ? '<span class="insp" title="Heroic Inspiration">★</span>' : ''}<span class="m">Sheet ›</span></button>
     <div class="mhp"><span><b>${c.hp}</b>/${c.hpMax} HP${c.temp ? ` <span class="m">+${c.temp} temp</span>` : ''}</span><span class="bar ${pct <= 25 ? 'crit' : pct <= 50 ? 'low' : ''}"><i style="width:${pct}%"></i></span></div>
     <div class="mgrid"><div><span>AC</span><b>${ac}</b></div><div><span>Init</span><b>${sgn(d.init)}${c.initAdv ? '<small>adv</small>' : ''}</b></div><div><span>Speed</span><b class="sm">${esc(String(c.speed).split(',')[0])}</b></div>${caster ? `<div class="${d.innate ? 'boost' : ''}"><span>Spell DC</span><b>${d.dc}</b></div>` : `<div><span>Strike DC</span><b>${8 + d.pb + d.m.dex}</b></div>`}</div>
-    <div class="mgrid"><div><span>Passive Perc.</span><b>${d.passive}</b></div><div><span>Passive Inv.</span><b>${d.pInv}</b></div><div><span>Passive Insight</span><b>${d.pIns}</b></div><div><span>Saves</span><b class="sm">${c.saves.map(a => a.toUpperCase()).join(' ')}</b></div></div>
+    <div class="mgrid"><div><span>Passive Perc.</span><b>${d.passive}</b></div><div><span>Passive Inv.</span><b>${d.pInv}</b></div><div><span>Passive Insight</span><b>${d.pIns}</b></div><div><span>Saves</span><b class="sm">${c.saves.map(a => a.toUpperCase()).join(' ')}${c.saveMisc ? ` <small>${sgn(c.saveMisc)} all</small>` : ''}</b></div></div>
     ${lines.join('')}
   </div>`;
 }
@@ -1104,7 +1110,7 @@ function hpDrawer(c){
       const n = Math.max(0, parseInt(inp.value || '0', 10));
       let msg = '';
       if (b.dataset.h === 'dmg') { let x = n; const t = Math.min(c.temp || 0, x); c.temp = (c.temp || 0) - t; x -= t; c.hp = Math.max(0, c.hp - x);
-        if (c.conc && R.spells[c.conc] && n > 0) { const dc = Math.min(30, Math.max(10, Math.floor(n / 2))); const sv = D(c).m.con + (c.saves.includes('con') ? D(c).pb : 0); msg = `Concentration save for ${R.spells[c.conc].n}: DC ${dc}, Con ${sgn(sv)}`; } }
+        if (c.conc && R.spells[c.conc] && n > 0) { const dc = Math.min(30, Math.max(10, Math.floor(n / 2))); const sv = D(c).sv.con; msg = `Concentration save for ${R.spells[c.conc].n}: DC ${dc}, Con ${sgn(sv)}`; } }
       if (b.dataset.h === 'heal') { if (c.hp <= 0 && n > 0) { c.used.dS = 0; c.used.dF = 0; } c.hp = Math.min(c.hpMax, c.hp + n); }
       if (b.dataset.h === 'temp') c.temp = n;
       if (b.dataset.h === 'hd') {
@@ -1570,7 +1576,7 @@ document.addEventListener('click', e => {
     const [kind, k] = rl.dataset.roll.split(':'), d = D(c);
     if (kind === 'init') rollMenu('Initiative', d.init, c, c.initAdv);
     if (kind === 'check') rollMenu(`${ABN[k]} check`, d.m[k], c);
-    if (kind === 'save') rollMenu(`${ABN[k]} save`, d.m[k] + (c.saves.includes(k) ? d.pb : 0), c);
+    if (kind === 'save') rollMenu(`${ABN[k]} save`, d.sv[k], c);
     if (kind === 'skill') rollMenu(skillName(k), d.skills[k], c);
     if (kind === 'death') { const r = d20(); if (r === 20) { c.hp = 1; c.used.dS = 0; c.used.dF = 0; } else if (r === 1) c.used.dF = Math.min(3, used(c,'dF') + 2); else if (r >= 10) c.used.dS = Math.min(3, used(c,'dS') + 1); else c.used.dF = Math.min(3, used(c,'dF') + 1); save(c.id); pushRoll({label:'Death save', total:r, nat:r, detail: r === 20 ? 'Natural 20: back up with 1 HP' : r === 1 ? 'Natural 1: two failures' : r >= 10 ? 'Success' : 'Failure'}); }
     if (kind === 'heal') { const max = Math.max(1, d.cm), left = 1 + c.level - used(c,'heal'), n = Math.min(max, left); if (n <= 0) { toast('Healing Light pool is empty'); return; } const r = rollExpr(`${n}d6`); c.used.heal = used(c,'heal') + n; save(c.id); pushRoll({label:`Healing Light (${n}d6)`, total:r.total, detail:r.detail + ' HP restored'}); }
@@ -1656,8 +1662,9 @@ document.addEventListener('input', e => {
   if (t.dataset.pcoin) { party.coins[t.dataset.pcoin] = parseInt(t.value,10) || 0; saveParty(); return; }
   if (t.dataset.mfield) { chars.mule[t.dataset.mfield] = t.value; lsSet(LS_KEY, chars); clearTimeout(inputTimer); inputTimer = setTimeout(() => save('mule'), 600); return; }
   const c = ctxChar(); if (!c) return;
-  if (t.dataset.field) { const f = t.dataset.field; if (['hpMax','ac','initMisc'].includes(f)) c[f] = parseInt(t.value,10) || 0; else if (f === 'ac2') { const v = parseInt(t.value,10); if (v) c.ac2 = v; else delete c.ac2; } else c[f] = t.value; }
+  if (t.dataset.field) { const f = t.dataset.field; if (['hpMax','ac','initMisc','saveMisc'].includes(f)) c[f] = parseInt(t.value,10) || 0; else if (f === 'ac2') { const v = parseInt(t.value,10); if (v) c.ac2 = v; else delete c.ac2; } else c[f] = t.value; }
   else if (t.dataset.coin) c.coins[t.dataset.coin] = parseInt(t.value,10) || 0;
+  else if (t.dataset.saveb) { const v = parseInt(t.value,10); c.saveB = c.saveB || {}; if (v) c.saveB[t.dataset.saveb] = v; else delete c.saveB[t.dataset.saveb]; }
   else if (t.dataset.abin) { const v = parseInt(t.value,10); if (v >= 1 && v <= 30) c.ab[t.dataset.abin] = v; }
   else return;
   lsSet(LS_KEY, chars);
